@@ -61,7 +61,8 @@ jobs:
           command: |
             cd nodeapps/nimble-backend
             npm install
-            sudo systemctl stop nimble-backend
+            sudo systemctl stop nimble-backend || true
             sudo cp nimble-backend.service /lib/systemd/system/nimble-backend.service
             sudo systemctl daemon-reload
+            sudo systemctl enable nimble-backend
             sudo systemctl start nimble-backend
