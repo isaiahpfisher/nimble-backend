@@ -11,10 +11,13 @@ jobs:
   aws-deploy:
     runs-on: ubuntu-latest
     env:
-      DB_HOST: ${{ secrets.AWS_DB_HOST }}
-      DB_PW: ${{ secrets.AWS_DB_PW}}
-      DB_USER: ${{ secrets.AWS_DB_USER }}
-      DB_NAME: ${{ secrets.AWS_DB_NAME }}
+      DB_HOST: ${{ secrets.PROD_DB_HOST }}
+      DB_PW: ${{ secrets.PROD_DB_PW}}
+      DB_USER: ${{ secrets.PROD_DB_USER }}
+      DB_NAME: ${{ secrets.PROD_DB_NAME }}
+      DB_PORT: ${{ secrets.PROD_DB_PORT }}
+      DB_DIALECT: postgres
+      DB_SSL: "true"
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
 
     steps:
@@ -30,6 +33,9 @@ jobs:
             printf "DB_PW='%s'\n" "$DB_PW"
             printf "DB_USER='%s'\n" "$DB_USER"
             printf "DB_NAME='%s'\n" "$DB_NAME"
+            printf "DB_PORT='%s'\n" "$DB_PORT"
+            printf "DB_DIALECT='%s'\n" "$DB_DIALECT"
+            printf "DB_SSL='%s'\n" "$DB_SSL"
             printf "SECRET_KEY='%s'\n" "$SECRET_KEY"
           } > .env
 
