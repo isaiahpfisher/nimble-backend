@@ -1,0 +1,61 @@
+name: AWS DEPLOY TO STAGING
+# turn off deploy to AWS
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - dev
+
+jobs:
+  aws-deploy:
+    runs-on: ubuntu-latest
+    env:
+      DB_HOST: ${{ secrets.AWS_DB_HOST }}
+      DB_PW: ${{ secrets.AWS_DB_PW}}
+      DB_USER: ${{ secrets.AWS_DB_USER }}
+      DB_NAME: ${{ secrets.AWS_DB_NAME }}
+      SECRET_KEY: ${{ secrets.SECRET_KEY }}
+
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          ref: dev
+      - uses: actions/setup-node@v1
+      - run: npm install
+
+      - run: |
+          {
+            printf "DB_HOST='%s'\n" "$DB_HOST"
+            printf "DB_PW='%s'\n" "$DB_PW"
+            printf "DB_USER='%s'\n" "$DB_USER"
+            printf "DB_NAME='%s'\n" "$DB_NAME"
+            printf "SECRET_KEY='%s'\n" "$SECRET_KEY"
+          } > .env
+
+      - run: npm run bundle
+
+      - name: Deploy to Server
+        uses: easingthemes/ssh-deploy@v2.1.1
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          ARGS: "-rltgoDzvO --delete"
+          SOURCE: "deploy/"
+          REMOTE_HOST: ${{secrets.REMOTE_HOST}}
+          REMOTE_USER: ubuntu
+          TARGET: "nodeapps/nimble-backend"
+      - name: Execute SSH commmands on remote server
+        uses: JimCronqvist/action-ssh@master
+        env:
+          NAME: "Root"
+        with:
+          hosts: ""
+          privateKey: ${{ secrets.SERVER_SSH_KEY }}
+          debug: false
+          command: |
+            cd nodeapps/nimble-backend
+            npm install
+            sudo systemctl stop nimble-backend
+            sudo cp nimble-backend.service /lib/systemd/system/nimble-backend.service
+            sudo systemctl daemon-reload
+            sudo systemctl start nimble-backend
