@@ -37,10 +37,6 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // simple route
-app.get("/", (req, res) => {
-  res.json({ message: "The nimble backend is running..." });
-});
-
 require("./app/routes/auth.routes.js")(app);
 require("./app/routes/ingredient.routes")(app);
 require("./app/routes/recipe.routes")(app);
