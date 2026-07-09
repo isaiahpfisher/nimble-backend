@@ -1,0 +1,49 @@
+# Local development stack: frontend + backend + MySQL.
+# On AWS you use docker-compose.prod.yml instead (Postgres/RDS, no db service).
+name: nimble
+services:
+  db:
+    image: mysql:8
+    environment:
+      MYSQL_DATABASE: nimble_db
+      MYSQL_ROOT_PASSWORD: root
+    #   - "3307:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 40s # don't count health during first-boot DB init
+
+  backend:
+    build: .
+    restart: unless-stopped # retry if it crashes (e.g. DB not ready yet)
+    environment:
+      NODE_ENV: development
+      PORT: 3200
+      DB_DIALECT: mysql
+      DB_HOST: db # the service name above, not localhost
+      DB_PORT: 3306
+      DB_NAME: nimble_db
+      DB_USER: root
+      DB_PW: root
+      DB_SSL: "false"
+      SECRET_KEY: xT1tdO3CfMH01pjxC+guN1LWSt2nKvr5td6KUpw7Czg=
+      CORS_ORIGIN: http://localhost:8081
+    ports:
+      - "3200:3200"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build: ../nimble-frontend # sibling repo, cloned next to this one
+    ports:
+      - "8081:80"
+    depends_on:
+      - backend
+
+volumes:
+  db_data:

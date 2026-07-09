@@ -1,6 +1,7 @@
-name: AWS DEPLOY TO STAGING
-# turn off deploy to AWS
+name: AWS DEPLOY (DOCKER)
 
+# Builds the backend image, pushes it to ECR, and (re)deploys the
+# containerized stack on the EC2 instance via docker compose.
 on:
   pull_request:
     types: [closed]
@@ -8,61 +9,78 @@ on:
       - dev
 
 jobs:
-  aws-deploy:
+  deploy:
+    # only run when the PR was actually merged, not just closed
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
+
     env:
-      DB_HOST: ${{ secrets.PROD_DB_HOST }}
-      DB_PW: ${{ secrets.PROD_DB_PW}}
-      DB_USER: ${{ secrets.PROD_DB_USER }}
-      DB_NAME: ${{ secrets.PROD_DB_NAME }}
-      DB_PORT: ${{ secrets.PROD_DB_PORT }}
-      DB_DIALECT: postgres
-      DB_SSL: "true"
-      SECRET_KEY: ${{ secrets.SECRET_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      ECR_REPOSITORY: nimble-backend
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
           ref: dev
-      - uses: actions/setup-node@v1
-      - run: npm install
 
-      - run: |
-          {
-            printf "DB_HOST='%s'\n" "$DB_HOST"
-            printf "DB_PW='%s'\n" "$DB_PW"
-            printf "DB_USER='%s'\n" "$DB_USER"
-            printf "DB_NAME='%s'\n" "$DB_NAME"
-            printf "DB_PORT='%s'\n" "$DB_PORT"
-            printf "DB_DIALECT='%s'\n" "$DB_DIALECT"
-            printf "DB_SSL='%s'\n" "$DB_SSL"
-            printf "SECRET_KEY='%s'\n" "$SECRET_KEY"
-          } > .env
-
-      - run: npm run bundle
-
-      - name: Deploy to Server
-        uses: easingthemes/ssh-deploy@v2.1.1
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.SERVER_SSH_KEY }}
-          ARGS: "-rltgoDzvO --delete"
-          SOURCE: "deploy/"
-          REMOTE_HOST: ${{secrets.REMOTE_HOST}}
-          REMOTE_USER: ubuntu
-          TARGET: "nodeapps/nimble-backend"
-      - name: Execute SSH commmands on remote server
-        uses: JimCronqvist/action-ssh@master
-        env:
-          NAME: "Root"
+      # --- Authenticate to AWS / ECR (simplest: IAM access keys) ---
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          hosts: ""
-          privateKey: ${{ secrets.SERVER_SSH_KEY }}
-          debug: false
-          command: |
-            cd nodeapps/nimble-backend
-            npm install
-            sudo systemctl stop nimble-backend || true
-            sudo cp nimble-backend.service /lib/systemd/system/nimble-backend.service
-            sudo systemctl daemon-reload
-            sudo systemctl enable nimble-backend
-            sudo systemctl start nimble-backend
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # --- Build & push the backend image ---
+      - name: Build and push image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" \
+                       -t "$REGISTRY/$ECR_REPOSITORY:latest" .
+          docker push "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker push "$REGISTRY/$ECR_REPOSITORY:latest"
+
+      # --- Copy the prod compose file to the instance ---
+      - name: Copy compose file to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.REMOTE_HOST }}
+          username: ubuntu
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          source: docker-compose.prod.yml
+          target: nimble
+
+      # --- Deploy: write .env, log in to ECR (instance IAM role), pull, up ---
+      - name: Deploy on server
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        with:
+          host: ${{ secrets.REMOTE_HOST }}
+          username: ubuntu
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: REGISTRY
+          script: |
+            cd ~/nimble
+            cat > .env <<EOF
+            BACKEND_IMAGE=${REGISTRY}/nimble-backend:latest
+            FRONTEND_IMAGE=${REGISTRY}/nimble-frontend:latest
+            DB_HOST=${{ secrets.PROD_DB_HOST }}
+            DB_PORT=${{ secrets.PROD_DB_PORT }}
+            DB_NAME=${{ secrets.PROD_DB_NAME }}
+            DB_USER=${{ secrets.PROD_DB_USER }}
+            DB_PW=${{ secrets.PROD_DB_PW }}
+            SECRET_KEY=${{ secrets.SECRET_KEY }}
+            CORS_ORIGIN=http://${{ secrets.REMOTE_HOST }}
+            EOF
+            aws ecr get-login-password --region ${{ secrets.AWS_REGION }} \
+              | docker login --username AWS --password-stdin "$REGISTRY"
+            docker compose -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.prod.yml up -d
+            docker image prune -f
