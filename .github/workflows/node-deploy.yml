@@ -16,7 +16,7 @@ jobs:
 
     env:
       AWS_REGION: ${{ secrets.AWS_REGION }}
-      ECR_REPOSITORY: nimble-backend
+      ECR_REPOSITORY: nimble/nimble-backend
 
     steps:
       - uses: actions/checkout@v4
@@ -69,8 +69,8 @@ jobs:
           script: |
             cd ~/nimble
             cat > .env <<EOF
-            BACKEND_IMAGE=${REGISTRY}/nimble-backend:latest
-            FRONTEND_IMAGE=${REGISTRY}/nimble-frontend:latest
+            BACKEND_IMAGE=${REGISTRY}/nimble/nimble-backend:latest
+            FRONTEND_IMAGE=${REGISTRY}/nimble/nimble-frontend:latest
             DB_HOST=${{ secrets.PROD_DB_HOST }}
             DB_PORT=${{ secrets.PROD_DB_PORT }}
             DB_NAME=${{ secrets.PROD_DB_NAME }}
