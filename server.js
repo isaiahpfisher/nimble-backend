@@ -36,13 +36,27 @@ app.use(express.json());
 // parse requests of content-type - application/x-www-form-urlencoded
 app.use(express.urlencoded({ extended: true }));
 
-// simple route
+// routes
 require("./app/routes/auth.routes.js")(app);
 require("./app/routes/ingredient.routes")(app);
 require("./app/routes/recipe.routes")(app);
 require("./app/routes/recipeStep.routes")(app);
 require("./app/routes/recipeIngredient.routes")(app);
 require("./app/routes/user.routes")(app);
+
+require("./app/routes/project.routes")(app);
+require("./app/routes/projectMember.routes")(app);
+require("./app/routes/repository.routes")(app);
+require("./app/routes/storyState.routes")(app);
+require("./app/routes/storyType.routes")(app);
+require("./app/routes/sprint.routes")(app);
+require("./app/routes/retrospective.routes")(app);
+require("./app/routes/standup.routes")(app);
+require("./app/routes/story.routes")(app);
+require("./app/routes/relation.routes")(app);
+require("./app/routes/acceptanceCriteria.routes")(app);
+require("./app/routes/comment.routes")(app);
+require("./app/routes/activity.routes")(app);
 
 // set port, listen for requests
 const PORT = process.env.PORT || 3200;
