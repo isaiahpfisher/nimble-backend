@@ -1,3 +1,6 @@
+> [!TIP]  
+> View our [Entity Relationship Diagram](ERD.md).
+
 # Nimble with Node
 
 Please visit https://github.com/isaiahpfisher/nimble-frontend for the frontend repository.
