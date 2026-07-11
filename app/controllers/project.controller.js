@@ -1,13 +1,25 @@
 const db = require("../models");
 const Project = db.project;
 const ProjectMember = db.projectMember;
+const User = db.user;
 const { authenticate } = require("../authentication/authentication");
 const Op = db.Sequelize.Op;
 const { httpError } = require("../utils/httpUtils");
 
 exports.findAll = async (req, res) => {
   try {
-    const data = await Project.findAll();
+    const data = await Project.findAll({
+      include: {
+        model: db.projectMember,
+        as: "projectMembers",
+        include: {
+          model: db.user,
+          as: "user",
+          required: false,
+          attributes: ["id", "firstName", "lastName", "email"],
+        },
+      },
+    });
     res.send(data);
   } catch (err) {
     res.status(500).send({
@@ -23,7 +35,7 @@ exports.findAllForUser = async (req, res) => {
     const data = await Project.findAll({
       include: {
         model: db.projectMember,
-        as: "projectMember",
+        as: "projectMembers",
         where: { userId },
         attributes: [],
       },
@@ -39,7 +51,18 @@ exports.findAllForUser = async (req, res) => {
 exports.findOne = async (req, res) => {
   try {
     const id = req.params.id;
-    const data = await Project.findByPk(id);
+    const data = await Project.findByPk(id, {
+      include: {
+        model: db.projectMember,
+        as: "projectMembers",
+        include: {
+          model: db.user,
+          as: "user",
+          required: false,
+          attributes: ["id", "firstName", "lastName", "email"],
+        },
+      },
+    });
 
     if (data) {
       res.send(data);
@@ -78,6 +101,49 @@ exports.create = async (req, res) => {
 
     await ProjectMember.create({
       userId,
+      projectId: data.id,
+      isManager: true,
+    });
+
+    res.send(data);
+  } catch (err) {
+    res.status(err.statusCode || 500).send({
+      message: err.message || "Error creating project.",
+    });
+  }
+};
+
+exports.adminCreate = async (req, res) => {
+  try {
+    if (
+      !req.body.title ||
+      !req.body.deadline ||
+      !req.body.description ||
+      !req.body.managerId
+    ) {
+      throw httpError("Missing required fields.", 400);
+    }
+
+    const deadline = new Date(req.body.deadline);
+    if (isNaN(deadline.getTime()) || deadline < new Date()) {
+      throw httpError("Invalid deadline.", 400);
+    }
+
+    const manager = await User.findByPk(req.body.managerId);
+    if (!manager) {
+      throw httpError(`Cannot find User with id = ${req.body.managerId}.`, 404);
+    }
+
+    const project = {
+      title: req.body.title,
+      description: req.body.description,
+      deadline: req.body.deadline,
+    };
+
+    const data = await Project.create(project);
+
+    await ProjectMember.create({
+      userId: manager.id,
       projectId: data.id,
       isManager: true,
     });

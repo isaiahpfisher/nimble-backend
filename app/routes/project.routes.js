@@ -7,6 +7,7 @@ module.exports = (app) => {
   router.get("/users/me/projects", authenticateRoute, Project.findAllForUser);
   router.get("/projects/:id", Project.findOne);
   router.post("/projects/", authenticateRoute, Project.create);
+  router.post("/admin/projects", authenticateRoute, Project.adminCreate);
   router.put("/projects/:id", authenticateRoute, Project.update);
   router.delete("/projects/:id", authenticateRoute, Project.delete);
 

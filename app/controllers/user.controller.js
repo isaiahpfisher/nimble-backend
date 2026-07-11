@@ -3,6 +3,7 @@ const User = db.user;
 const Session = db.session;
 const Op = db.Sequelize.Op;
 const { encrypt, getSalt, hashPassword } = require("../authentication/crypto");
+const { httpError } = require("../utils/httpUtils");
 
 // Create and Save a new User
 exports.create = async (req, res) => {
@@ -70,8 +71,8 @@ exports.create = async (req, res) => {
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
-        isAdmin: user.isAdmin,
-        id: user.id,
+        isAdmin: createdUser.isAdmin,
+        id: userId,
         token: token,
       };
       res.send(userInfo);
@@ -92,7 +93,10 @@ exports.findAll = async (req, res) => {
   var condition = id ? { id: { [Op.like]: `%${id}%` } } : null;
 
   try {
-    const data = await User.findAll({ where: condition });
+    const data = await User.findAll({
+      where: condition,
+      attributes: ["id", "isAdmin", "firstName", "lastName", "email"],
+    });
     res.send(data);
   } catch (err) {
     res.status(500).send({
@@ -106,7 +110,9 @@ exports.findOne = async (req, res) => {
   const id = req.params.id;
 
   try {
-    const data = await User.findByPk(id);
+    const data = await User.findByPk(id, {
+      attributes: ["id", "isAdmin", "firstName", "lastName", "email"],
+    });
     if (data) {
       res.send(data);
     } else {
@@ -146,26 +152,22 @@ exports.findByEmail = async (req, res) => {
   }
 };
 
-// Update a User by the id in the request
 exports.update = async (req, res) => {
-  const id = req.params.id;
-
   try {
-    const number = await User.update(req.body, {
-      where: { id: id },
-    });
-    if (number == 1) {
-      res.send({
-        message: "User was updated successfully.",
-      });
-    } else {
-      res.send({
-        message: `Cannot update User with id = ${id}. Maybe User was not found or req.body is empty!`,
-      });
+    await authenticate(req, res);
+
+    const user = await User.findByPk(req.params.id);
+    if (!user) {
+      throw httpError(`Cannot find user with id = ${req.params.id}.`, 404);
     }
+
+    const { firstName, lastName, email, isAdmin } = req.body;
+    await user.update({ firstName, lastName, email, isAdmin });
+
+    res.send(user);
   } catch (err) {
-    res.status(500).send({
-      message: err.message || "Error updating User with id =" + id,
+    res.status(err.statusCode || 500).send({
+      message: err.message || "Error updating user.",
     });
   }
 };

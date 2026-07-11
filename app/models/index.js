@@ -63,7 +63,7 @@ db.projectMember.belongsTo(db.user, {
 
 // projectMember <-> project
 db.project.hasMany(db.projectMember, {
-  as: "projectMember",
+  as: "projectMembers",
   foreignKey: { allowNull: false },
   onDelete: "CASCADE",
 });

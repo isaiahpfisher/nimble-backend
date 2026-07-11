@@ -28,10 +28,19 @@ if (help) {
 
 const run = async () => {
   try {
-    console.log(
-      `Syncing database${wipe ? " (force=true, alter=true)" : ""}...`,
-    );
-    await db.sequelize.sync(wipe ? { force: true, alter: true } : {});
+    console.log(`Syncing database${wipe ? " (force=true)" : ""}...`);
+    if (wipe) {
+      // Disable FK checks so force:true can drop tables regardless of the
+      // referential order (users is referenced by stories, sessions, etc.).
+      await db.sequelize.query("SET FOREIGN_KEY_CHECKS = 0");
+      try {
+        await db.sequelize.sync({ force: true });
+      } finally {
+        await db.sequelize.query("SET FOREIGN_KEY_CHECKS = 1");
+      }
+    } else {
+      await db.sequelize.sync();
+    }
     console.log("Database synced.");
 
     const salt = await getSalt();
