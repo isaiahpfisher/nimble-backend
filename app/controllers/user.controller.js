@@ -3,6 +3,7 @@ const User = db.user;
 const Session = db.session;
 const Op = db.Sequelize.Op;
 const { encrypt, getSalt, hashPassword } = require("../authentication/crypto");
+const { authenticate } = require("../authentication/authentication");
 const { httpError } = require("../utils/httpUtils");
 
 // Create and Save a new User

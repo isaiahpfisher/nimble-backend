@@ -21,10 +21,15 @@ jest.mock("../../app/authentication/crypto", () => ({
   hashPassword: jest.fn(),
 }));
 
+jest.mock("../../app/authentication/authentication", () => ({
+  authenticate: jest.fn(),
+}));
+
 const db = require("../../app/models");
 const User = db.user;
 const Session = db.session;
 const { encrypt, getSalt, hashPassword } = require("../../app/authentication/crypto");
+const { authenticate } = require("../../app/authentication/authentication");
 const controller = require("../../app/controllers/user.controller");
 
 // Builds a stubbed Express response whose chainable methods we can assert on.
@@ -149,7 +154,10 @@ describe("findAll", () => {
 
     await controller.findAll(req, res);
 
-    expect(User.findAll).toHaveBeenCalledWith({ where: null });
+    expect(User.findAll).toHaveBeenCalledWith({
+      where: null,
+      attributes: ["id", "isAdmin", "firstName", "lastName", "email"],
+    });
     expect(res.send).toHaveBeenCalledWith(users);
   });
 
@@ -243,34 +251,52 @@ describe("findByEmail", () => {
 });
 
 describe("update", () => {
-  it("confirms success when exactly one row is updated", async () => {
-    User.update.mockResolvedValue(1);
-    const req = { params: { id: "3" }, body: { firstName: "New" } };
+  it("updates the authenticated user with the provided fields", async () => {
+    authenticate.mockResolvedValue({ userId: 3 });
+    const update = jest.fn().mockResolvedValue({});
+    const user = { id: 3, update };
+    User.findByPk.mockResolvedValue(user);
+    const req = {
+      params: { id: "3" },
+      body: { firstName: "New", lastName: "Name", email: "n@e.com", isAdmin: true },
+    };
     const res = mockRes();
 
     await controller.update(req, res);
 
-    expect(User.update).toHaveBeenCalledWith(req.body, { where: { id: "3" } });
-    expect(res.send).toHaveBeenCalledWith({
-      message: "User was updated successfully.",
+    expect(authenticate).toHaveBeenCalledWith(req, res);
+    expect(User.findByPk).toHaveBeenCalledWith("3");
+    expect(update).toHaveBeenCalledWith({
+      firstName: "New",
+      lastName: "Name",
+      email: "n@e.com",
+      isAdmin: true,
     });
+    expect(res.send).toHaveBeenCalledWith(user);
+    expect(res.status).not.toHaveBeenCalled();
   });
 
-  it("reports when no row was updated", async () => {
-    User.update.mockResolvedValue(0);
+  it("responds 404 when the user does not exist", async () => {
+    authenticate.mockResolvedValue({ userId: 3 });
+    User.findByPk.mockResolvedValue(null);
     const req = { params: { id: "3" }, body: {} };
     const res = mockRes();
 
     await controller.update(req, res);
 
+    expect(res.status).toHaveBeenCalledWith(404);
     expect(res.send).toHaveBeenCalledWith({
-      message:
-        "Cannot update User with id = 3. Maybe User was not found or req.body is empty!",
+      message: "Cannot find user with id = 3.",
     });
   });
 
   it("responds 500 on failure", async () => {
-    User.update.mockRejectedValue(new Error("boom"));
+    authenticate.mockResolvedValue({ userId: 3 });
+    const user = {
+      id: 3,
+      update: jest.fn().mockRejectedValue(new Error("boom")),
+    };
+    User.findByPk.mockResolvedValue(user);
     const req = { params: { id: "3" }, body: {} };
     const res = mockRes();
 

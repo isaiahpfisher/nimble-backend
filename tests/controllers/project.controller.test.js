@@ -78,7 +78,7 @@ describe("findAllForUser", () => {
     expect(Project.findAll).toHaveBeenCalledWith({
       include: {
         model: db.projectMember,
-        as: "projectMember",
+        as: "projectMembers",
         where: { userId: 42 },
         attributes: [],
       },
@@ -107,7 +107,15 @@ describe("findOne", () => {
 
     await controller.findOne(req, res);
 
-    expect(Project.findByPk).toHaveBeenCalledWith("7");
+    expect(Project.findByPk).toHaveBeenCalledWith(
+      "7",
+      expect.objectContaining({
+        include: expect.objectContaining({
+          model: db.projectMember,
+          as: "projectMembers",
+        }),
+      }),
+    );
     expect(res.send).toHaveBeenCalledWith(project);
     expect(res.status).not.toHaveBeenCalled();
   });
