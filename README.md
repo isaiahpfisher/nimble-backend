@@ -3,6 +3,8 @@
 
 # Nimble with Node
 
+[![codecov](https://codecov.io/gh/isaiahpfisher/nimble-backend/branch/dev/graph/badge.svg)](https://codecov.io/gh/isaiahpfisher/nimble-backend/branch/dev)
+
 Please visit https://github.com/isaiahpfisher/nimble-frontend for the frontend repository.
 
 #### Please note:

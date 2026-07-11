@@ -70,6 +70,7 @@ exports.create = async (req, res) => {
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
+        isAdmin: user.isAdmin,
         id: user.id,
         token: token,
       };
@@ -203,8 +204,7 @@ exports.deleteAll = async (req, res) => {
     res.send({ message: `${number} People were deleted successfully!` });
   } catch (err) {
     res.status(500).send({
-      message:
-        err.message || "Some error occurred while removing all people.",
+      message: err.message || "Some error occurred while removing all people.",
     });
   }
 };

@@ -18,16 +18,6 @@ const db = {};
 db.Sequelize = Sequelize;
 db.sequelize = sequelize;
 
-// Old recipe stuff
-db.ingredient = require("./ingredient.model.js")(sequelize, Sequelize);
-db.recipe = require("./recipe.model.js")(sequelize, Sequelize);
-db.recipeStep = require("./recipeStep.model.js")(sequelize, Sequelize);
-db.recipeIngredient = require("./recipeIngredient.model.js")(
-  sequelize,
-  Sequelize,
-);
-
-// New nimble stuff
 db.user = require("./user.model.js")(sequelize, Sequelize);
 db.session = require("./session.model.js")(sequelize, Sequelize);
 db.activity = require("./activity.model.js")(sequelize, Sequelize);
@@ -46,66 +36,6 @@ db.acceptanceCriteria = require("./acceptanceCriteria.model.js")(
   Sequelize,
 );
 db.comment = require("./comment.model.js")(sequelize, Sequelize);
-
-// MORE OLD RECIPE STUFF
-
-// foreign key for recipe
-db.user.hasMany(db.recipe, {
-  as: "recipe",
-  foreignKey: { allowNull: true },
-  onDelete: "CASCADE",
-});
-db.recipe.belongsTo(db.user, {
-  as: "user",
-  foreignKey: { allowNull: true },
-  onDelete: "CASCADE",
-});
-
-// foreign key for recipeStep
-db.recipe.hasMany(db.recipeStep, {
-  as: "recipeStep",
-  foreignKey: { allowNull: false },
-  onDelete: "CASCADE",
-});
-db.recipeStep.belongsTo(db.recipe, {
-  as: "recipe",
-  foreignKey: { allowNull: false },
-  onDelete: "CASCADE",
-});
-
-// foreign keys for recipeIngredient
-db.recipeStep.hasMany(db.recipeIngredient, {
-  as: "recipeIngredient",
-  foreignKey: { allowNull: true },
-  onDelete: "CASCADE",
-});
-db.recipe.hasMany(db.recipeIngredient, {
-  as: "recipeIngredient",
-  foreignKey: { allowNull: false },
-  onDelete: "CASCADE",
-});
-db.ingredient.hasMany(db.recipeIngredient, {
-  as: "recipeIngredient",
-  foreignKey: { allowNull: false },
-  onDelete: "CASCADE",
-});
-db.recipeIngredient.belongsTo(db.recipeStep, {
-  as: "recipeStep",
-  foreignKey: { allowNull: true },
-  onDelete: "CASCADE",
-});
-db.recipeIngredient.belongsTo(db.recipe, {
-  as: "recipe",
-  foreignKey: { allowNull: false },
-  onDelete: "CASCADE",
-});
-db.recipeIngredient.belongsTo(db.ingredient, {
-  as: "ingredient",
-  foreignKey: { allowNull: false },
-  onDelete: "CASCADE",
-});
-
-// MORE NEW NIMBLE STUFF
 
 // session
 db.user.hasMany(db.session, {

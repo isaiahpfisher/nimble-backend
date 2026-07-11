@@ -4,12 +4,25 @@
   "description": "Nimble Node.js with Rest API",
   "main": "server.js",
   "scripts": {
-    "test": "jest --",
+    "test": "jest",
+    "test:coverage": "jest --coverage",
     "start": "node server.js",
     "init-db": "node scripts/init-db.js",
     "init-db:wipe": "node scripts/init-db.js --wipe",
     "init-db:keep": "node scripts/init-db.js --no-wipe",
     "bundle": "mkdir deploy && cp -r app server.js package.json package-lock.json nimble-backend.service .env deploy"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "collectCoverageFrom": [
+      "app/**/*.js",
+      "!app/models/**",
+      "!app/config/**"
+    ],
+    "coverageReporters": [
+      "text",
+      "lcov"
+    ]
   },
   "keywords": [
     "node.js",

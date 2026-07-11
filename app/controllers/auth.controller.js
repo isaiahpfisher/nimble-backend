@@ -27,6 +27,7 @@ exports.login = async (req, res) => {
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
+        isAdmin: user.isAdmin,
         id: user.id,
         token: token,
       };
@@ -34,7 +35,8 @@ exports.login = async (req, res) => {
     } catch (err) {
       console.error(err);
       res.status(500).send({
-        message: err.message || "Some error occurred while creating the session.",
+        message:
+          err.message || "Some error occurred while creating the session.",
       });
     }
   }
