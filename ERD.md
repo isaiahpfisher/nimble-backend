@@ -110,6 +110,7 @@ erDiagram
     SPRINT {
         int id PK
         int project_id FK
+        string name
         date start
         date end
     }

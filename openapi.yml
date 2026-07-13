@@ -1,0 +1,1019 @@
+openapi: 3.0.3
+info:
+  title: Nimble Backend API
+  version: 1.0.0
+  description: >
+    REST API for Nimble, an agile project-management backend built with
+    Node.js, Express and Sequelize.
+
+
+    ## Authentication
+
+    Two authentication schemes are used:
+
+    - **Basic auth** (`Authorization: Basic <base64(email:password)>`) is used
+      only by `POST /login` to exchange credentials for a session token.
+    - **Bearer token** (`Authorization: Bearer <token>`) is used by all
+      protected endpoints. The token is the encrypted session id returned by
+      `POST /login` or `POST /users`.
+
+    Tokens expire 24 hours after they are issued.
+servers:
+  - url: http://localhost:3200/nimbleapi
+    description: Local development server (default PORT 3200)
+tags:
+  - name: Auth
+    description: Login and logout
+  - name: Users
+    description: User management
+  - name: Projects
+    description: Project management
+  - name: Reference / Read-only
+    description: >
+      Collection endpoints that return all records for a given resource.
+      These are currently read-only list endpoints.
+
+paths:
+  /login:
+    post:
+      tags: [Auth]
+      summary: Log in with credentials
+      description: >
+        Authenticates a user via HTTP Basic auth and creates a new session.
+        Returns the user profile together with a bearer token valid for 24 hours.
+      security:
+        - basicAuth: []
+      responses:
+        "200":
+          description: Login succeeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Invalid password, user not found, or missing credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Error creating the session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /logout:
+    post:
+      tags: [Auth]
+      summary: Log out
+      description: >
+        Destroys the session associated with the supplied bearer token.
+        Responds with no body.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Logout processed (no content returned)
+
+  /users:
+    post:
+      tags: [Users]
+      summary: Create a new user
+      description: >
+        Registers a new user, creates a session and returns the user profile
+        with a bearer token. If the email is already in use, no user is created.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserCreate"
+      responses:
+        "200":
+          description: User created (returns profile and token)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: A required field (firstName, lastName, email, password) is missing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Error creating the user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      tags: [Users]
+      summary: List users
+      description: Returns all users. Password and salt are never included.
+      parameters:
+        - name: id
+          in: query
+          required: false
+          description: Filter users by a partial id match.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/UserPublic"
+        "500":
+          description: Error retrieving users
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags: [Users]
+      summary: Delete all users
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Deletion result message
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+        "401":
+          description: Missing or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Error removing users
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /users/{id}:
+    parameters:
+      - $ref: "#/components/parameters/IdPath"
+    get:
+      tags: [Users]
+      summary: Get a user by id
+      responses:
+        "200":
+          description: The requested user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserPublic"
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Error retrieving user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
+      tags: [Users]
+      summary: Update a user
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserUpdate"
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserPublic"
+        "401":
+          description: Missing or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Error updating user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags: [Users]
+      summary: Delete a user by id
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Deletion result message
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+        "401":
+          description: Missing or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Error deleting user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /projects:
+    get:
+      tags: [Projects]
+      summary: List all projects
+      description: Returns all projects including their project members and member user profiles.
+      responses:
+        "200":
+          description: List of projects
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProjectWithMembers"
+        "500":
+          description: Error retrieving projects
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      tags: [Projects]
+      summary: Create a project
+      description: >
+        Creates a project and adds the authenticated user as a manager
+        project member.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectCreate"
+      responses:
+        "200":
+          description: Created project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "400":
+          description: Missing required fields or invalid deadline (must be a future date)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Error creating project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /admin/projects:
+    post:
+      tags: [Projects]
+      summary: Create a project on behalf of a manager (admin)
+      description: >
+        Creates a project and assigns the specified user (managerId) as the
+        manager project member.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminProjectCreate"
+      responses:
+        "200":
+          description: Created project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "400":
+          description: Missing required fields or invalid deadline (must be a future date)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Manager user not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Error creating project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /projects/{id}:
+    parameters:
+      - $ref: "#/components/parameters/IdPath"
+    get:
+      tags: [Projects]
+      summary: Get a project by id
+      description: Returns the project including its project members and their user profiles.
+      responses:
+        "200":
+          description: The requested project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectWithMembers"
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Error retrieving project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
+      tags: [Projects]
+      summary: Update a project
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectUpdate"
+      responses:
+        "200":
+          description: Updated project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "400":
+          description: Invalid deadline (must be a future date)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Error updating project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags: [Projects]
+      summary: Delete a project
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Deletion result message
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Error deleting project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /users/me/projects:
+    get:
+      tags: [Projects]
+      summary: List the authenticated user's projects
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Projects the authenticated user is a member of
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Project"
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Error retrieving projects
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /projectMembers:
+    get:
+      tags: [Reference / Read-only]
+      summary: List all project members
+      responses:
+        "200":
+          description: List of project members
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProjectMember"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /repositories:
+    get:
+      tags: [Reference / Read-only]
+      summary: List all repositories
+      responses:
+        "200":
+          description: List of repositories
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Repository"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /storyStates:
+    get:
+      tags: [Reference / Read-only]
+      summary: List all story states
+      responses:
+        "200":
+          description: List of story states
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StoryState"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /storyTypes:
+    get:
+      tags: [Reference / Read-only]
+      summary: List all story types
+      responses:
+        "200":
+          description: List of story types
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StoryType"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /sprints:
+    get:
+      tags: [Reference / Read-only]
+      summary: List all sprints
+      responses:
+        "200":
+          description: List of sprints
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Sprint"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /retrospectives:
+    get:
+      tags: [Reference / Read-only]
+      summary: List all retrospectives
+      responses:
+        "200":
+          description: List of retrospectives
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Retrospective"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /standups:
+    get:
+      tags: [Reference / Read-only]
+      summary: List all standups
+      responses:
+        "200":
+          description: List of standups
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Standup"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /stories:
+    get:
+      tags: [Reference / Read-only]
+      summary: List all stories
+      responses:
+        "200":
+          description: List of stories
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Story"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /relations:
+    get:
+      tags: [Reference / Read-only]
+      summary: List all relations
+      responses:
+        "200":
+          description: List of relations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Relation"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /acceptanceCriteria:
+    get:
+      tags: [Reference / Read-only]
+      summary: List all acceptance criteria
+      responses:
+        "200":
+          description: List of acceptance criteria
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AcceptanceCriteria"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /comments:
+    get:
+      tags: [Reference / Read-only]
+      summary: List all comments
+      responses:
+        "200":
+          description: List of comments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Comment"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /activities:
+    get:
+      tags: [Reference / Read-only]
+      summary: List all activities
+      responses:
+        "200":
+          description: List of activities
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Activity"
+        "500":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      description: "Base64-encoded email:password. Used only by POST /login."
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Encrypted session id issued by POST /login or POST /users.
+
+  parameters:
+    IdPath:
+      name: id
+      in: path
+      required: true
+      description: Resource identifier.
+      schema:
+        type: integer
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        message:
+          type: string
+      required: [message]
+
+    Message:
+      type: object
+      properties:
+        message:
+          type: string
+      required: [message]
+
+    AuthResponse:
+      type: object
+      description: Returned by login and user creation.
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+          format: email
+        firstName:
+          type: string
+        lastName:
+          type: string
+        isAdmin:
+          type: boolean
+        token:
+          type: string
+          description: Bearer token to use in the Authorization header.
+
+    UserCreate:
+      type: object
+      required: [firstName, lastName, email, password]
+      properties:
+        firstName:
+          type: string
+        lastName:
+          type: string
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+
+    UserUpdate:
+      type: object
+      properties:
+        firstName:
+          type: string
+        lastName:
+          type: string
+        email:
+          type: string
+          format: email
+        isAdmin:
+          type: boolean
+
+    UserPublic:
+      type: object
+      description: User record without password/salt.
+      properties:
+        id:
+          type: integer
+        firstName:
+          type: string
+        lastName:
+          type: string
+        email:
+          type: string
+          format: email
+        isAdmin:
+          type: boolean
+
+    Project:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        description:
+          type: string
+        deadline:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ProjectWithMembers:
+      allOf:
+        - $ref: "#/components/schemas/Project"
+        - type: object
+          properties:
+            projectMembers:
+              type: array
+              items:
+                $ref: "#/components/schemas/ProjectMember"
+
+    ProjectCreate:
+      type: object
+      required: [title, description, deadline]
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        deadline:
+          type: string
+          format: date-time
+          description: Must be a valid date in the future.
+
+    AdminProjectCreate:
+      allOf:
+        - $ref: "#/components/schemas/ProjectCreate"
+        - type: object
+          required: [managerId]
+          properties:
+            managerId:
+              type: integer
+              description: Id of the user to assign as project manager.
+
+    ProjectUpdate:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        deadline:
+          type: string
+          format: date-time
+          description: If provided, must be a valid date in the future.
+
+    ProjectMember:
+      type: object
+      properties:
+        id:
+          type: integer
+        isManager:
+          type: string
+          description: Whether the member is a project manager.
+        userId:
+          type: integer
+        projectId:
+          type: integer
+        user:
+          $ref: "#/components/schemas/UserPublic"
+
+    Repository:
+      type: object
+      properties:
+        id:
+          type: integer
+        githubId:
+          type: string
+        name:
+          type: string
+
+    StoryState:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        type:
+          type: string
+        order:
+          type: integer
+
+    StoryType:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+
+    Sprint:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+
+    Retrospective:
+      type: object
+      properties:
+        id:
+          type: integer
+        agenda:
+          type: string
+          nullable: true
+        summary:
+          type: string
+
+    Standup:
+      type: object
+      properties:
+        id:
+          type: integer
+        agenda:
+          type: string
+          nullable: true
+        notes:
+          type: string
+        date:
+          type: string
+          format: date-time
+
+    Story:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        description:
+          type: string
+        priority:
+          type: integer
+        estimate:
+          type: integer
+
+    Relation:
+      type: object
+      properties:
+        id:
+          type: integer
+        type:
+          type: string
+
+    AcceptanceCriteria:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+
+    Comment:
+      type: object
+      properties:
+        id:
+          type: integer
+        content:
+          type: string
+
+    Activity:
+      type: object
+      properties:
+        id:
+          type: integer
+        action:
+          type: string
+        changes:
+          type: object
+          description: Arbitrary JSON describing the change.
