@@ -50,7 +50,7 @@ const run = async () => {
       firstName: "Test",
       lastName: "User",
       isAdmin: true,
-      email: "test@example.com",
+      email: "admin@example.com",
       password: passwordHash,
       salt: salt,
     });
@@ -99,6 +99,40 @@ const run = async () => {
       isManager: false,
       userId: carol.id,
       projectId: project.id,
+    });
+
+    // --- Project 2 (Test User is a member/manager) ---
+    const project2 = await db.project.create({
+      title: "Atlas",
+      description: "Internal analytics and reporting platform.",
+      deadline: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
+    });
+    const member2Owner = await db.projectMember.create({
+      isManager: true,
+      userId: user.id,
+      projectId: project2.id,
+    });
+    const member2Bob = await db.projectMember.create({
+      isManager: false,
+      userId: bob.id,
+      projectId: project2.id,
+    });
+
+    // --- Project 3 (Test User is NOT a member) ---
+    const project3 = await db.project.create({
+      title: "Beacon",
+      description: "Customer-facing notifications service.",
+      deadline: new Date(Date.now() + 45 * 24 * 60 * 60 * 1000),
+    });
+    const member3Bob = await db.projectMember.create({
+      isManager: true,
+      userId: bob.id,
+      projectId: project3.id,
+    });
+    const member3Carol = await db.projectMember.create({
+      isManager: false,
+      userId: carol.id,
+      projectId: project3.id,
     });
 
     // --- Repository ---
@@ -301,8 +335,10 @@ const run = async () => {
     });
 
     console.log("Nimble seed data created:", {
-      projectId: project.id,
+      projectIds: [project.id, project2.id, project3.id],
       memberIds: [memberOwner.id, memberBob.id, memberCarol.id],
+      project2MemberIds: [member2Owner.id, member2Bob.id],
+      project3MemberIds: [member3Bob.id, member3Carol.id],
       repositoryId: repository.id,
       storyStateIds: [
         stateBacklog.id,
