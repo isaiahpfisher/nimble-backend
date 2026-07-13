@@ -1,16 +1,18 @@
 module.exports = (sequelize, Sequelize) => {
-  const Ingredient = sequelize.define("ingredient", {
-    name: {
+  const Project = sequelize.define("project", {
+    title: {
       type: Sequelize.STRING,
       allowNull: false,
     },
-    unit: {
+    description: {
       type: Sequelize.STRING,
       allowNull: false,
     },
-    pricePerUnit: {
-      type: Sequelize.DECIMAL(10, 2),
+    deadline: {
+      type: Sequelize.DATE,
+      allowNull: false,
     },
   });
-  return Ingredient;
+
+  return Project;
 };

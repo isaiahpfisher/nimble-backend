@@ -1,6 +1,6 @@
 module.exports = (sequelize, Sequelize) => {
-  const Recipe = sequelize.define("recipe", {
-    name: {
+  const Story = sequelize.define("story", {
+    title: {
       type: Sequelize.STRING,
       allowNull: false,
     },
@@ -8,18 +8,15 @@ module.exports = (sequelize, Sequelize) => {
       type: Sequelize.STRING,
       allowNull: false,
     },
-    servings: {
+    priority: {
       type: Sequelize.INTEGER,
       allowNull: false,
     },
-    time: {
+    estimate: {
       type: Sequelize.INTEGER,
-      allowNull: false,
-    },
-    isPublished: {
-      type: Sequelize.BOOLEAN,
       allowNull: false,
     },
   });
-  return Recipe;
+
+  return Story;
 };
