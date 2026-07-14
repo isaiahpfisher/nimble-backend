@@ -98,24 +98,27 @@ describe("create", () => {
     ["lastName", { firstName: "F", email: "e", password: "p" }],
     ["email", { firstName: "F", lastName: "L", password: "p" }],
     ["password", { firstName: "F", lastName: "L", email: "e" }],
-  ])("throws a 400 when %s is missing", async (_field, body) => {
+  ])("responds 400 when %s is missing", async (_field, body) => {
     const req = { body };
     const res = mockRes();
 
-    await expect(controller.create(req, res)).rejects.toMatchObject({
-      statusCode: 400,
-    });
+    await controller.create(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
     expect(User.create).not.toHaveBeenCalled();
   });
 
-  it("returns a message string when the email is already in use", async () => {
+  it("responds 400 when the email is already in use", async () => {
     User.findOne.mockResolvedValue({ id: 1 });
     const req = { body: { ...validBody } };
     const res = mockRes();
 
-    const result = await controller.create(req, res);
+    await controller.create(req, res);
 
-    expect(result).toBe("This email is already in use.");
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.send).toHaveBeenCalledWith({
+      message: "This email is already in use.",
+    });
     expect(User.create).not.toHaveBeenCalled();
   });
 
@@ -134,14 +137,15 @@ describe("create", () => {
     expect(res.send).toHaveBeenCalledWith({ message: "session boom" });
   });
 
-  it("returns an error message string when the lookup fails", async () => {
+  it("responds 500 when the lookup fails", async () => {
     User.findOne.mockRejectedValue(new Error("lookup failed"));
     const req = { body: { ...validBody } };
     const res = mockRes();
 
-    const result = await controller.create(req, res);
+    await controller.create(req, res);
 
-    expect(result).toBe("lookup failed");
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.send).toHaveBeenCalledWith({ message: "lookup failed" });
   });
 });
 
