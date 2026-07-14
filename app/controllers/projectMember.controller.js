@@ -16,9 +16,10 @@ exports.findAll = async (req, res) => {
     });
   }
 };
+
 exports.create = async (req, res) => {
   try {
-    const { userId } = await authenticate(req, res);
+    //const { userId } = await authenticate(req, res);
 
     if (!req.body.userId || !req.body.projectId || !req.body.isManager) {
       throw httpError("Missing required fields.", 400);
@@ -30,12 +31,80 @@ exports.create = async (req, res) => {
       isManager: req.body.isManager,
     };
 
-    const data = await ProjectMember.create(project);
+    const data = await ProjectMember.create(projectMember);
 
     res.send(data);
   } catch (err) {
     res.status(err.statusCode || 500).send({
-      message: err.message || "Error creating project.",
+      message: err.message || "Error creating projectMember.",
+    });
+  }
+};
+
+exports.findAllForUser = async (req, res) => {
+  try {
+    //const { userId } = await authenticate(req, res);
+
+    const data = await ProjectMember.findAll({
+        where: { userId: req.params.userId },
+    });
+    res.send(data);
+  } catch (err) {
+    res.status(500).send({
+      message: err.message || "Error retrieving projectMembers for user.",
+    });
+  }
+};
+
+exports.findAllForProject = async (req, res) => {
+  try {
+    //const { userId } = await authenticate(req, res);
+
+    const data = await ProjectMember.findAll({
+        where: { projectId: req.params.projectId },
+    });
+    res.send(data);
+  } catch (err) {
+    res.status(500).send({
+      message: err.message || "Error retrieving projectMembers for user.",
+    });
+  }
+};
+
+exports.update = async (req, res) => {
+  try {
+    //await authenticate(req, res);
+
+    const projectMember = await ProjectMember.findByPk(req.params.id);
+    if (!projectMember) {
+      throw httpError(`Cannot find ProjectMember with id = ${req.params.id}.`, 404);
+    }
+
+    const { isManager } = req.body;
+    await projectMember.update({ isManager });
+
+    res.send(projectMember);
+  } catch (err) {
+    res.status(err.statusCode || 500).send({
+      message: err.message || "Error updating projectMember.",
+    });
+  }
+};
+
+exports.delete = async (req, res) => {
+  try {
+    //await authenticate(req, res);
+
+    const projectMember = await ProjectMember.findByPk(req.params.id);
+    if (!projectMember) {
+      throw httpError(`Cannot find ProjectMember with id = ${req.params.id}.`, 404);
+    }
+
+    await projectMember.destroy();
+    res.send({ message: "ProjectMember deleted successfully!" });
+  } catch (err) {
+    res.status(err.statusCode || 500).send({
+      message: err.message || "Error deleting projectMember.",
     });
   }
 };
