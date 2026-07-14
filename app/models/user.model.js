@@ -21,11 +21,20 @@ module.exports = (sequelize, Sequelize) => {
     },
     password: {
       type: Sequelize.BLOB,
-      allowNull: false,
+      allowNull: true, 
     },
     salt: {
       type: Sequelize.BLOB,
-      allowNull: false,
+      allowNull: true, 
+    },
+    githubId: {
+      type: Sequelize.STRING,
+      allowNull: true, 
+      unique: true,
+    },
+    avatarUrl: {
+      type: Sequelize.STRING,
+      allowNull: true,
     },
   });
 
