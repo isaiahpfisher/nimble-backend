@@ -7,7 +7,7 @@ module.exports = (app) => {
   router.get("/projectMembers/", ProjectMember.findAll);
 
   // Create a new ProjectMember
-    router.post("/projectMembers/",authenticateRoute, ProjectMember.create);
+  router.post("/projectMembers/:project/:member",authenticateRoute, ProjectMember.create);
 
 
   app.use("/nimbleapi", router);

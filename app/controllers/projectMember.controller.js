@@ -20,28 +20,17 @@ exports.create = async (req, res) => {
   try {
     const { userId } = await authenticate(req, res);
 
-    if (!req.body.title || !req.body.deadline || !req.body.description) {
+    if (!req.body.userId || !req.body.projectId || !req.body.isManager) {
       throw httpError("Missing required fields.", 400);
     }
 
-    const deadline = new Date(req.body.deadline);
-    if (isNaN(deadline.getTime()) || deadline < new Date()) {
-      throw httpError("Invalid deadline.", 400);
-    }
-
-    const project = {
-      title: req.body.title,
-      description: req.body.description,
-      deadline: req.body.deadline,
+    const projectMember = {
+      userId: req.body.userId,
+      projectId: req.body.projectId,
+      isManager: req.body.isManager,
     };
 
-    const data = await Project.create(project);
-
-    await ProjectMember.create({
-      userId,
-      projectId: data.id,
-      isManager: true,
-    });
+    const data = await ProjectMember.create(project);
 
     res.send(data);
   } catch (err) {
