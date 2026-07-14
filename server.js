@@ -9,7 +9,7 @@ const db = require("./app/models");
 
 const startServer = async () => {
   try {
-    await db.sequelize.sync();
+    await db.sequelize.sync({ alter: true });
     console.log("Database synced.");
 
     if (process.env.NODE_ENV !== "test") {

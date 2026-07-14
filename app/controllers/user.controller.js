@@ -8,26 +8,26 @@ const { httpError } = require("../utils/httpUtils");
 
 // Create and Save a new User
 exports.create = async (req, res) => {
-  // Validate request
-  if (req.body.firstName === undefined) {
-    const error = new Error("First name cannot be empty for user!");
-    error.statusCode = 400;
-    throw error;
-  } else if (req.body.lastName === undefined) {
-    const error = new Error("Last name cannot be empty for user!");
-    error.statusCode = 400;
-    throw error;
-  } else if (req.body.email === undefined) {
-    const error = new Error("Email cannot be empty for user!");
-    error.statusCode = 400;
-    throw error;
-  } else if (req.body.password === undefined) {
-    const error = new Error("Password cannot be empty for user!");
-    error.statusCode = 400;
-    throw error;
-  }
-
   try {
+    // Validate request
+    if (req.body.firstName === undefined) {
+      const error = new Error("First name cannot be empty for user!");
+      error.statusCode = 400;
+      throw error;
+    } else if (req.body.lastName === undefined) {
+      const error = new Error("Last name cannot be empty for user!");
+      error.statusCode = 400;
+      throw error;
+    } else if (req.body.email === undefined) {
+      const error = new Error("Email cannot be empty for user!");
+      error.statusCode = 400;
+      throw error;
+    } else if (req.body.password === undefined) {
+      const error = new Error("Password cannot be empty for user!");
+      error.statusCode = 400;
+      throw error;
+    }
+
     const data = await User.findOne({
       where: {
         email: req.body.email,
@@ -35,10 +35,10 @@ exports.create = async (req, res) => {
     });
 
     if (data) {
-      return "This email is already in use.";
+      const error = new Error("This email is already in use.");
+      error.statusCode = 400;
+      throw error;
     }
-
-    console.log("email not found");
 
     let salt = await getSalt();
     let hash = await hashPassword(req.body.password, salt);
@@ -84,7 +84,9 @@ exports.create = async (req, res) => {
       });
     }
   } catch (err) {
-    return err.message || "Error retrieving User with email=" + req.body.email;
+    return res.status(err.statusCode || 500).send({
+      message: err.message || "Some error occurred while creating the User.",
+    });
   }
 };
 
