@@ -21,15 +21,15 @@ module.exports = (sequelize, Sequelize) => {
     },
     password: {
       type: Sequelize.BLOB,
-      allowNull: true, // GitHub-authenticated users won't have a local password
+      allowNull: true, 
     },
     salt: {
       type: Sequelize.BLOB,
-      allowNull: true, // GitHub-authenticated users won't have a local password
+      allowNull: true, 
     },
     githubId: {
       type: Sequelize.STRING,
-      allowNull: true, // null for users who signed up via password, set for GitHub users
+      allowNull: true, 
       unique: true,
     },
     avatarUrl: {
