@@ -19,7 +19,7 @@ exports.findAll = async (req, res) => {
 
 exports.create = async (req, res) => {
   try {
-    //const { userId } = await authenticate(req, res);
+    const { userId } = await authenticate(req, res);
 
     if (!req.body.userId || !req.body.projectId || !req.body.isManager) {
       throw httpError("Missing required fields.", 400);
@@ -43,7 +43,7 @@ exports.create = async (req, res) => {
 
 exports.findAllForUser = async (req, res) => {
   try {
-    //const { userId } = await authenticate(req, res);
+    const { userId } = await authenticate(req, res);
 
     const data = await ProjectMember.findAll({
         where: { userId: req.params.userId },
@@ -71,9 +71,29 @@ exports.findAllForProject = async (req, res) => {
   }
 };
 
+exports.findOne = async (req, res) => {
+  try {
+    const id = req.params.id;
+    const data = await ProjectMember.findByPk(id, {
+    });
+
+    if (data) {
+      res.send(data);
+    } else {
+      res.status(404).send({
+        message: `Cannot find ProjectMember with id = ${id}.`,
+      });
+    }
+  } catch (err) {
+    res.status(500).send({
+      message: err.message || "Error retrieving ProjectMember with id = " + id,
+    });
+  }
+};
+
 exports.update = async (req, res) => {
   try {
-    //await authenticate(req, res);
+    await authenticate(req, res);
 
     const projectMember = await ProjectMember.findByPk(req.params.id);
     if (!projectMember) {
@@ -93,7 +113,7 @@ exports.update = async (req, res) => {
 
 exports.delete = async (req, res) => {
   try {
-    //await authenticate(req, res);
+    await authenticate(req, res);
 
     const projectMember = await ProjectMember.findByPk(req.params.id);
     if (!projectMember) {

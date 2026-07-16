@@ -9,7 +9,7 @@ module.exports = (app) => {
   //Retrieve all ProjectMember for a specific user
   router.get("/projectMembers/user/:userId", ProjectMember.findAllForUser);
 
-    //Retrieve all ProjectMember for a specific user
+    //Retrieve all ProjectMember for a specific Project
   router.get("/projectMembers/project/:projectId", ProjectMember.findAllForProject);
 
   // Create a new ProjectMember
