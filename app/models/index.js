@@ -172,12 +172,12 @@ db.story.belongsTo(db.repository, {
 // story <-> sprint
 db.sprint.hasMany(db.story, {
   as: "story",
-  foreignKey: { name: "sprintId", allowNull: false },
+  foreignKey: { name: "sprintId", allowNull: true },
   onDelete: "CASCADE",
 });
 db.story.belongsTo(db.sprint, {
   as: "sprint",
-  foreignKey: { name: "sprintId", allowNull: false },
+  foreignKey: { name: "sprintId", allowNull: true },
   onDelete: "CASCADE",
 });
 
@@ -273,7 +273,7 @@ db.acceptanceCriteria.belongsTo(db.story, {
 
 // comment <-> story
 db.story.hasMany(db.comment, {
-  as: "comment",
+  as: "comments",
   foreignKey: { allowNull: false },
   onDelete: "CASCADE",
 });
@@ -285,7 +285,7 @@ db.comment.belongsTo(db.story, {
 
 // comment <-> user
 db.user.hasMany(db.comment, {
-  as: "comment",
+  as: "comments",
   foreignKey: { allowNull: false },
   onDelete: "CASCADE",
 });

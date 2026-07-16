@@ -1,6 +1,12 @@
 const db = require("../models");
 const Story = db.story;
+const Project = db.project;
+const User = db.user;
+const Repository = db.repository;
+const Sprint = db.sprint;
+const AcceptanceCriteria = db.acceptanceCriteria;
 const Op = db.Sequelize.Op;
+const { httpError } = require("../utils/httpUtils");
 
 exports.findAll = async (req, res) => {
   try {
@@ -9,6 +15,213 @@ exports.findAll = async (req, res) => {
   } catch (err) {
     res.status(500).send({
       message: err.message || "Something went wrong",
+    });
+  }
+};
+
+exports.findOne = async (req, res) => {
+  try {
+    const storyId = req.params.storyId;
+    const data = await Story.findByPk(storyId, {
+      include: [
+        { model: db.storyState, as: "state" },
+        { model: db.storyType, as: "type" },
+        { model: db.repository, as: "repository" },
+        { model: db.project, as: "project" },
+        { model: db.sprint, as: "sprint" },
+        {
+          model: db.user,
+          as: "reporter",
+          attributes: ["id", "firstName", "lastName", "email"],
+        },
+        {
+          model: db.user,
+          as: "assignee",
+          attributes: ["id", "firstName", "lastName", "email"],
+        },
+        {
+          model: db.user,
+          as: "reviewer",
+          attributes: ["id", "firstName", "lastName", "email"],
+        },
+        { model: db.acceptanceCriteria, as: "acceptanceCriteria" },
+        { model: db.comment, as: "comments" },
+      ],
+    });
+
+    if (data) {
+      res.send(data);
+    } else {
+      res.status(404).send({
+        message: `Cannot find Story with id = ${id}.`,
+      });
+    }
+  } catch (err) {
+    res.status(500).send({
+      message: err.message || "Error retrieving Story with id = " + id,
+    });
+  }
+};
+
+exports.create = async (req, res) => {
+  try {
+    const { userId } = await authenticate(req, res);
+    const projectId = req.params.id;
+
+    if (
+      !req.body.title ||
+      !req.body.description ||
+      !req.body.typeId ||
+      !req.body.priority ||
+      req.body.estimate == null
+    ) {
+      throw httpError("Missing required fields.", 400);
+    }
+
+    if (req.body.acceptanceCriteria?.some((ac) => !ac.title)) {
+      throw httpError("Acceptance criteria must have a title.", 400);
+    }
+
+    const project = await Project.findByPk(projectId);
+
+    if (!project) {
+      throw httpError(`Cannot find Project with id = ${projectId}.`, 404);
+    }
+
+    const story = {
+      title: req.body.title,
+      description: req.body.description,
+      typeId: req.body.typeId,
+      stateId: req.body.stateId,
+      priority: req.body.priority,
+      estimate: req.body.estimate,
+      projectId: projectId,
+      sprintId: req.body.sprintId,
+      repositoryId: req.body.repositoryId,
+      reporterId: userId,
+      assigneeId: req.body.assigneeId,
+      reviewerId: req.body.reviewerId,
+    };
+
+    const data = await Story.create(story);
+
+    await AcceptanceCriteria.bulkCreate(
+      req.body.acceptanceCriteria.map((ac) => {
+        return {
+          title: ac.title,
+          description: ac.description,
+          status: ac.status,
+          storyId: data.id,
+        };
+      }),
+    );
+
+    res.send(data);
+  } catch (err) {
+    res.status(err.statusCode || 500).send({
+      message: err.message || "Error creating story.",
+    });
+  }
+};
+
+exports.update = async (req, res) => {
+  const storyId = req.params.storyId;
+  
+  try {
+    await authenticate(req, res);
+
+    if (
+      !req.body.title ||
+      !req.body.description ||
+      !req.body.typeId ||
+      !req.body.priority ||
+      req.body.estimate == null
+    ) {
+      throw httpError("Missing required fields.", 400);
+    }
+
+    if (req.body.acceptanceCriteria?.some((ac) => !ac.title)) {
+      throw httpError("Acceptance criteria must have a title.", 400);
+    }
+
+    const story = await Story.findByPk(storyId);
+
+    if (!story) {
+      throw httpError(`Cannot find Story with id = ${storyId}.`, 404);
+    }
+
+    await story.update({
+      title: req.body.title,
+      description: req.body.description,
+      typeId: req.body.typeId,
+      stateId: req.body.stateId,
+      priority: req.body.priority,
+      estimate: req.body.estimate,
+      sprintId: req.body.sprintId,
+      repositoryId: req.body.repositoryId,
+      reporterId: req.body.reporterId,
+      assigneeId: req.body.assigneeId,
+      reviewerId: req.body.reviewerId,
+    });
+
+    const acceptanceCriteria = req.body.acceptanceCriteria || [];
+
+    // Delete existing acceptance criteria that are no longer present.
+    const keepIds = acceptanceCriteria
+      .filter((ac) => ac.id)
+      .map((ac) => ac.id);
+    await AcceptanceCriteria.destroy({
+      where: {
+        storyId: storyId,
+        id: { [Op.notIn]: keepIds },
+      },
+    });
+
+    // Create new acceptance criteria and update existing ones.
+    await Promise.all(
+      acceptanceCriteria.map((ac) => {
+        if (!ac.id) {
+          return AcceptanceCriteria.create({
+            title: ac.title,
+            description: ac.description,
+            status: ac.status,
+            storyId: storyId,
+          });
+        }
+        return AcceptanceCriteria.update(
+          {
+            title: ac.title,
+            description: ac.description,
+            status: ac.status,
+          },
+          { where: { id: ac.id, storyId: storyId } },
+        );
+      }),
+    );
+
+    res.send(story);
+  } catch (err) {
+    res.status(err.statusCode || 500).send({
+      message: err.message || "Error updating story.",
+    });
+  }
+};
+
+exports.delete = async (req, res) => {
+  const storyId = req.params.storyId;
+  try {
+    await authenticate(req, res);
+
+    const story = await Story.findByPk(storyId);
+    if (!story) {
+      throw httpError(`Cannot find Story with id = ${storyId}.`, 404);
+    }
+
+    await story.destroy();
+    res.send({ message: "Story deleted successfully!" });
+  } catch (err) {
+    res.status(err.statusCode || 500).send({
+      message: err.message || "Error deleting story.",
     });
   }
 };
