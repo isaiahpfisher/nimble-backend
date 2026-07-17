@@ -6,5 +6,23 @@ module.exports = (app) => {
   // Retrieve all AcceptanceCriteria
   router.get("/acceptanceCriteria/", AcceptanceCriteria.findAll);
 
+  router.post(
+    "/projects/:projectId/stories/:storyId/acceptanceCriteria",
+    authenticateRoute,
+    AcceptanceCriteria.create,
+  );
+
+  router.put(
+    "/projects/:projectId/stories/:storyId/acceptanceCriteria/:criterionId",
+    authenticateRoute,
+    AcceptanceCriteria.update,
+  );
+
+  router.delete(
+    "/projects/:projectId/stories/:storyId/acceptanceCriteria/:criterionId",
+    authenticateRoute,
+    AcceptanceCriteria.delete,
+  );
+
   app.use("/nimbleapi", router);
 };

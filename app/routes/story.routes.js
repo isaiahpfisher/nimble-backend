@@ -9,16 +9,25 @@ module.exports = (app) => {
     authenticateRoute,
     Story.findOne,
   );
-  router.delete(
-    "/projects/:projectId/stories/:storyId",
-    authenticateRoute,
-    Story.delete,
-  );
+
   router.post("/projects/:id/stories/", authenticateRoute, Story.create);
+
+  router.get(
+    "/projects/:id/stories/",
+    authenticateRoute,
+    Story.findAllForProject,
+  );
+
   router.put(
     "/projects/:projectId/stories/:storyId",
     authenticateRoute,
     Story.update,
+  );
+
+  router.delete(
+    "/projects/:projectId/stories/:storyId",
+    authenticateRoute,
+    Story.delete,
   );
 
   app.use("/nimbleapi", router);

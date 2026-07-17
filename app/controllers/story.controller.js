@@ -45,7 +45,29 @@ exports.findOne = async (req, res) => {
           attributes: ["id", "firstName", "lastName", "email"],
         },
         { model: db.acceptanceCriteria, as: "acceptanceCriteria" },
-        { model: db.comment, as: "comments" },
+        { model: db.comment, as: "comment" },
+        {
+          model: db.relation,
+          as: "relationOne",
+          include: [
+            {
+              model: db.story,
+              as: "storyTwo",
+              attributes: ["id", "title", "typeId", "stateId"],
+            },
+          ],
+        },
+        {
+          model: db.relation,
+          as: "relationTwo",
+          include: [
+            {
+              model: db.story,
+              as: "storyOne",
+              attributes: ["id", "title", "typeId", "stateId"],
+            },
+          ],
+        },
       ],
     });
 
@@ -63,6 +85,44 @@ exports.findOne = async (req, res) => {
   }
 };
 
+exports.findAllForProject = async (req, res) => {
+  const projectId = req.params.id;
+  try {
+    const data = await Story.findAll({
+      where: { projectId: projectId },
+      include: [
+        { model: db.storyState, as: "state" },
+        { model: db.storyType, as: "type" },
+        { model: db.repository, as: "repository" },
+        { model: db.project, as: "project" },
+        { model: db.sprint, as: "sprint" },
+        {
+          model: db.user,
+          as: "reporter",
+          attributes: ["id", "firstName", "lastName", "email"],
+        },
+        {
+          model: db.user,
+          as: "assignee",
+          attributes: ["id", "firstName", "lastName", "email"],
+        },
+        {
+          model: db.user,
+          as: "reviewer",
+          attributes: ["id", "firstName", "lastName", "email"],
+        },
+        { model: db.acceptanceCriteria, as: "acceptanceCriteria" },
+        { model: db.comment, as: "comment" },
+      ],
+    });
+    res.send(data);
+  } catch (err) {
+    res.status(500).send({
+      message: err.message || "Something went wrong",
+    });
+  }
+};
+
 exports.create = async (req, res) => {
   try {
     const { userId } = await authenticate(req, res);
@@ -76,10 +136,6 @@ exports.create = async (req, res) => {
       req.body.estimate == null
     ) {
       throw httpError("Missing required fields.", 400);
-    }
-
-    if (req.body.acceptanceCriteria?.some((ac) => !ac.title)) {
-      throw httpError("Acceptance criteria must have a title.", 400);
     }
 
     const project = await Project.findByPk(projectId);
@@ -105,17 +161,6 @@ exports.create = async (req, res) => {
 
     const data = await Story.create(story);
 
-    await AcceptanceCriteria.bulkCreate(
-      req.body.acceptanceCriteria.map((ac) => {
-        return {
-          title: ac.title,
-          description: ac.description,
-          status: ac.status,
-          storyId: data.id,
-        };
-      }),
-    );
-
     res.send(data);
   } catch (err) {
     res.status(err.statusCode || 500).send({
@@ -126,7 +171,7 @@ exports.create = async (req, res) => {
 
 exports.update = async (req, res) => {
   const storyId = req.params.storyId;
-  
+
   try {
     await authenticate(req, res);
 
@@ -163,41 +208,6 @@ exports.update = async (req, res) => {
       assigneeId: req.body.assigneeId,
       reviewerId: req.body.reviewerId,
     });
-
-    const acceptanceCriteria = req.body.acceptanceCriteria || [];
-
-    // Delete existing acceptance criteria that are no longer present.
-    const keepIds = acceptanceCriteria
-      .filter((ac) => ac.id)
-      .map((ac) => ac.id);
-    await AcceptanceCriteria.destroy({
-      where: {
-        storyId: storyId,
-        id: { [Op.notIn]: keepIds },
-      },
-    });
-
-    // Create new acceptance criteria and update existing ones.
-    await Promise.all(
-      acceptanceCriteria.map((ac) => {
-        if (!ac.id) {
-          return AcceptanceCriteria.create({
-            title: ac.title,
-            description: ac.description,
-            status: ac.status,
-            storyId: storyId,
-          });
-        }
-        return AcceptanceCriteria.update(
-          {
-            title: ac.title,
-            description: ac.description,
-            status: ac.status,
-          },
-          { where: { id: ac.id, storyId: storyId } },
-        );
-      }),
-    );
 
     res.send(story);
   } catch (err) {

@@ -8,6 +8,8 @@ require("dotenv").config();
 const db = require("../app/models");
 const { getSalt, hashPassword } = require("../app/authentication/crypto");
 
+const RELATION_TYPES = ["BLOCKS", "RELATES_TO", "DUPLICATES", "PARENT_OF"];
+
 const args = process.argv.slice(2);
 const help = args.includes("--help") || args.includes("-h");
 const wipe =
@@ -215,7 +217,7 @@ const run = async () => {
     const storyLogin = await db.story.create({
       title: "Implement user login",
       description: "Users can authenticate with email and password.",
-      priority: 1,
+      priority: "High",
       estimate: 3,
       projectId: project.id,
       sprintId: sprint.id,
@@ -229,7 +231,7 @@ const run = async () => {
     const storyBug = await db.story.create({
       title: "Fix session expiration bug",
       description: "Sessions expire earlier than the configured window.",
-      priority: 2,
+      priority: "Low",
       estimate: 5,
       projectId: project.id,
       sprintId: sprint.id,
@@ -243,7 +245,7 @@ const run = async () => {
     const storyChore = await db.story.create({
       title: "Upgrade Sequelize to latest",
       description: "Bump ORM version and adjust breaking changes.",
-      priority: 3,
+      priority: "Blocker",
       estimate: 2,
       projectId: project.id,
       sprintId: sprint.id,
@@ -257,7 +259,7 @@ const run = async () => {
     const storyDone = await db.story.create({
       title: "Scaffold database models",
       description: "Create all Sequelize models and relationships.",
-      priority: 1,
+      priority: "Medium",
       estimate: 8,
       projectId: project.id,
       sprintId: sprint.id,
@@ -271,12 +273,12 @@ const run = async () => {
 
     // --- Relations between stories ---
     const relationBlocks = await db.relation.create({
-      type: "blocks",
+      type: "BLOCKS",
       storyOneId: storyDone.id,
       storyTwoId: storyLogin.id,
     });
     const relationRelates = await db.relation.create({
-      type: "relates_to",
+      type: "RELATES_TO",
       storyOneId: storyLogin.id,
       storyTwoId: storyBug.id,
     });
@@ -285,19 +287,19 @@ const run = async () => {
     const acLoginSuccess = await db.acceptanceCriteria.create({
       title: "Valid credentials succeed",
       description: "A user with correct email/password receives a session.",
-      status: "passed",
+      status: "Passed",
       storyId: storyLogin.id,
     });
     const acLoginFailure = await db.acceptanceCriteria.create({
       title: "Invalid credentials rejected",
       description: "A user with wrong credentials receives a 401.",
-      status: "pending",
+      status: "Pending",
       storyId: storyLogin.id,
     });
     const acBugFixed = await db.acceptanceCriteria.create({
       title: "Sessions honor configured window",
       description: "Sessions no longer expire early.",
-      status: "failed",
+      status: "Failed",
       storyId: storyBug.id,
     });
 

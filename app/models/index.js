@@ -273,7 +273,7 @@ db.acceptanceCriteria.belongsTo(db.story, {
 
 // comment <-> story
 db.story.hasMany(db.comment, {
-  as: "comments",
+  as: "comment",
   foreignKey: { allowNull: false },
   onDelete: "CASCADE",
 });
@@ -285,7 +285,7 @@ db.comment.belongsTo(db.story, {
 
 // comment <-> user
 db.user.hasMany(db.comment, {
-  as: "comments",
+  as: "comment",
   foreignKey: { allowNull: false },
   onDelete: "CASCADE",
 });
