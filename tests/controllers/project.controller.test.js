@@ -9,6 +9,13 @@ jest.mock("../../app/models", () => ({
   projectMember: {
     create: jest.fn(),
   },
+  // Sentinels for the associations findOne eager-loads; the controller only
+  // passes these through to Sequelize, so identity is all the tests need.
+  user: { name: "user" },
+  storyType: { name: "storyType" },
+  storyState: { name: "storyState" },
+  sprint: { name: "sprint" },
+  repository: { name: "repository" },
   Sequelize: { Op: {} },
 }));
 
@@ -107,15 +114,24 @@ describe("findOne", () => {
 
     await controller.findOne(req, res);
 
-    expect(Project.findByPk).toHaveBeenCalledWith(
-      "7",
-      expect.objectContaining({
-        include: expect.objectContaining({
+    expect(Project.findByPk).toHaveBeenCalledWith("7", {
+      include: [
+        { model: db.storyType, as: "storyType" },
+        { model: db.storyState, as: "storyState" },
+        { model: db.sprint, as: "sprint" },
+        { model: db.repository, as: "repository" },
+        {
           model: db.projectMember,
           as: "projectMembers",
-        }),
-      }),
-    );
+          include: {
+            model: db.user,
+            as: "user",
+            required: false,
+            attributes: ["id", "firstName", "lastName", "email"],
+          },
+        },
+      ],
+    });
     expect(res.send).toHaveBeenCalledWith(project);
     expect(res.status).not.toHaveBeenCalled();
   });
