@@ -20,8 +20,9 @@ exports.findAll = async (req, res) => {
 };
 
 exports.findOne = async (req, res) => {
+  const storyId = req.params.storyId;
+
   try {
-    const storyId = req.params.storyId;
     const data = await Story.findByPk(storyId, {
       include: [
         { model: db.storyState, as: "state" },
@@ -75,12 +76,12 @@ exports.findOne = async (req, res) => {
       res.send(data);
     } else {
       res.status(404).send({
-        message: `Cannot find Story with id = ${id}.`,
+        message: `Cannot find Story with id = ${storyId}.`,
       });
     }
   } catch (err) {
     res.status(500).send({
-      message: err.message || "Error retrieving Story with id = " + id,
+      message: err.message || "Error retrieving Story with id = " + storyId,
     });
   }
 };

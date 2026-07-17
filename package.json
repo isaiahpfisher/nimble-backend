@@ -17,7 +17,8 @@
     "collectCoverageFrom": [
       "app/**/*.js",
       "!app/models/**",
-      "!app/config/**"
+      "!app/config/**",
+      "!app/routes/**"
     ],
     "coverageReporters": [
       "text",
