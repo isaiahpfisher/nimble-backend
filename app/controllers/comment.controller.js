@@ -1,9 +1,15 @@
 const db = require("../models");
 const Comment = db.comment;
 const Story = db.story;
+const User = db.user;
 const AcceptanceCriteria = db.acceptanceCriteria;
 const Op = db.Sequelize.Op;
 const { httpError } = require("../utils/httpUtils");
+const {
+  notifyMentionedUser,
+  commentToPlainText,
+  storyUrl,
+} = require("../utils/email");
 
 // helper functions for validation
 async function findStoryOrFail(id) {
@@ -30,6 +36,21 @@ function validate(body) {
   if (!body.content) {
     throw httpError("Comment must have content.", 400);
   }
+}
+
+// helper to check for mentions in a comment
+async function getMentionedUsers(commentText) {
+  const regex = /data-id="([^"]+)"/g; // match the data-id="123" part
+  const ids = [...commentText.matchAll(regex)].map((match) => match[1]); // get just the ids
+  const numberIds = ids.map(Number); // convert to numbers
+  const uniqueIds = [...new Set(numberIds)]; // remove duplicates
+
+  // find the users with these ids
+  const users = await User.findAll({
+    where: { id: uniqueIds },
+  });
+
+  return users;
 }
 
 exports.findAll = async (req, res) => {
@@ -68,6 +89,7 @@ exports.createForStory = async (req, res) => {
   const { userId } = await authenticate(req, res);
 
   try {
+    const user = await User.findByPk(userId);
     const story = await findStoryOrFail(storyId);
     validate(req.body);
 
@@ -83,6 +105,18 @@ exports.createForStory = async (req, res) => {
         attributes: ["id", "email", "firstName", "lastName"],
       },
     });
+
+    const mentionedUsers = (await getMentionedUsers(data.content)).filter(
+      (u) => u.id !== userId,
+    );
+    await Promise.all(
+      mentionedUsers.map(
+        async (mentionedUser) =>
+          await notifyMentionedUser(mentionedUser, user, data, [
+            { label: "Story", value: story.title, url: storyUrl(story) },
+          ]),
+      ),
+    );
 
     res.send(data);
   } catch (err) {
@@ -117,7 +151,9 @@ exports.createForCriterion = async (req, res) => {
   const { userId } = await authenticate(req, res);
 
   try {
+    const user = await User.findByPk(userId);
     const criterion = await findCriterionOrFail(criterionId);
+    const parentStory = await criterion.getStory();
     validate(req.body);
 
     const data = await criterion.createComment({
@@ -132,6 +168,27 @@ exports.createForCriterion = async (req, res) => {
         attributes: ["id", "email", "firstName", "lastName"],
       },
     });
+
+    const mentionedUsers = (await getMentionedUsers(data.content)).filter(
+      (u) => u.id !== userId,
+    );
+    await Promise.all(
+      mentionedUsers.map(
+        async (mentionedUser) =>
+          await notifyMentionedUser(mentionedUser, user, data, [
+            {
+              label: "Story",
+              value: parentStory.title,
+              url: storyUrl(parentStory),
+            },
+            {
+              label: "Acceptance Criteria",
+              value: criterion.title,
+              url: storyUrl(parentStory, { acId: criterion.id }),
+            },
+          ]),
+      ),
+    );
 
     res.send(data);
   } catch (err) {

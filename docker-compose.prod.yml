@@ -22,6 +22,8 @@ services:
       DB_SSL: "true"
       SECRET_KEY: ${SECRET_KEY}
       CORS_ORIGIN: ${CORS_ORIGIN} # public site URL (belt-and-suspenders; proxy is same-origin)
+      RESEND_API_KEY: ${RESEND_API_KEY}
+      BASE_FRONTEND_URL: ${BASE_FRONTEND_URL} # used to build links in outbound emails
     expose:
       - "3200" # visible to the frontend container only, NOT the host/internet
 

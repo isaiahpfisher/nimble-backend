@@ -78,6 +78,8 @@ jobs:
             DB_PW=${{ secrets.PROD_DB_PW }}
             SECRET_KEY=${{ secrets.SECRET_KEY }}
             CORS_ORIGIN=http://${{ secrets.REMOTE_HOST }}
+            RESEND_API_KEY=${{ secrets.RESEND_API_KEY }}
+            BASE_FRONTEND_URL=http://${{ secrets.REMOTE_HOST }}/nimble-frontend
             EOF
             aws ecr get-login-password --region ${{ secrets.AWS_REGION }} \
               | docker login --username AWS --password-stdin "$REGISTRY"

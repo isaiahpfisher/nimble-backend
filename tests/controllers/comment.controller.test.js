@@ -11,14 +11,27 @@ jest.mock("../../app/models", () => ({
   acceptanceCriteria: {
     findOne: jest.fn(),
   },
-  user: {},
+  user: {
+    findByPk: jest.fn(),
+    findAll: jest.fn(),
+  },
   Sequelize: { Op: {} },
+}));
+
+// Notifications go out over Resend; stub the whole email util so requiring the
+// controller never constructs a real Resend client and no mail is sent.
+jest.mock("../../app/utils/email", () => ({
+  notifyMentionedUser: jest.fn().mockResolvedValue(undefined),
+  commentToPlainText: jest.fn((s) => s),
+  storyUrl: jest.fn(() => "http://example.test/story"),
 }));
 
 const db = require("../../app/models");
 const Comment = db.comment;
 const Story = db.story;
+const User = db.user;
 const AcceptanceCriteria = db.acceptanceCriteria;
+const email = require("../../app/utils/email");
 const controller = require("../../app/controllers/comment.controller");
 
 // The controller calls a bare `authenticate(...)`, which resolves to the global
@@ -54,6 +67,14 @@ beforeEach(() => {
   jest.clearAllMocks();
   authenticate = jest.fn().mockResolvedValue({ userId: 42 });
   global.authenticate = authenticate;
+  // The authoring user, looked up by createFor* before sending notifications.
+  User.findByPk.mockResolvedValue({
+    id: 42,
+    firstName: "Ada",
+    lastName: "Lovelace",
+  });
+  // No mentions by default; individual tests override for mention coverage.
+  User.findAll.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -189,6 +210,92 @@ describe("createForStory", () => {
     });
     expect(story.createComment).not.toHaveBeenCalled();
   });
+
+  it("emails each mentioned user (other than the author) with story context", async () => {
+    const created = mockComment({
+      content: '<p>Hi <span data-id="7"></span> and <span data-id="8"></span></p>',
+    });
+    const story = {
+      id: 3,
+      title: "Login",
+      createComment: jest.fn().mockResolvedValue(created),
+    };
+    Story.findOne.mockResolvedValue(story);
+    const mentioned = [
+      { id: 7, email: "bob@test.dev" },
+      { id: 8, email: "cara@test.dev" },
+    ];
+    User.findAll.mockResolvedValue(mentioned);
+    const req = { params: { storyId: "3" }, body: { content: "x" } };
+    const res = mockRes();
+
+    await controller.createForStory(req, res);
+
+    expect(User.findAll).toHaveBeenCalledWith({ where: { id: [7, 8] } });
+    expect(email.notifyMentionedUser).toHaveBeenCalledTimes(2);
+    const author = { id: 42, firstName: "Ada", lastName: "Lovelace" };
+    expect(email.notifyMentionedUser).toHaveBeenCalledWith(
+      mentioned[0],
+      author,
+      created,
+      [{ label: "Story", value: "Login", url: "http://example.test/story" }],
+    );
+    expect(email.notifyMentionedUser).toHaveBeenCalledWith(
+      mentioned[1],
+      author,
+      created,
+      expect.any(Array),
+    );
+    expect(res.send).toHaveBeenCalledWith(created);
+  });
+
+  it("does not email the author when they mention themselves", async () => {
+    const created = mockComment({
+      content: '<span data-id="42"></span><span data-id="7"></span>',
+    });
+    const story = {
+      id: 3,
+      title: "Login",
+      createComment: jest.fn().mockResolvedValue(created),
+    };
+    Story.findOne.mockResolvedValue(story);
+    // The DB returns both, but the self-mention must be filtered out.
+    User.findAll.mockResolvedValue([{ id: 42 }, { id: 7, email: "b@test.dev" }]);
+    const res = mockRes();
+
+    await controller.createForStory(
+      { params: { storyId: "3" }, body: { content: "x" } },
+      res,
+    );
+
+    expect(email.notifyMentionedUser).toHaveBeenCalledTimes(1);
+    expect(email.notifyMentionedUser).toHaveBeenCalledWith(
+      { id: 7, email: "b@test.dev" },
+      expect.objectContaining({ id: 42 }),
+      created,
+      expect.any(Array),
+    );
+  });
+
+  it("sends no notifications when the comment mentions no one", async () => {
+    const created = mockComment({ content: "just plain text" });
+    const story = {
+      id: 3,
+      title: "Login",
+      createComment: jest.fn().mockResolvedValue(created),
+    };
+    Story.findOne.mockResolvedValue(story);
+    const res = mockRes();
+
+    await controller.createForStory(
+      { params: { storyId: "3" }, body: { content: "x" } },
+      res,
+    );
+
+    expect(User.findAll).toHaveBeenCalledWith({ where: { id: [] } });
+    expect(email.notifyMentionedUser).not.toHaveBeenCalled();
+    expect(res.send).toHaveBeenCalledWith(created);
+  });
 });
 
 describe("findAllForCriterion", () => {
@@ -237,7 +344,9 @@ describe("createForCriterion", () => {
     const created = mockComment();
     const criterion = {
       id: 5,
+      title: "It works",
       createComment: jest.fn().mockResolvedValue(created),
+      getStory: jest.fn().mockResolvedValue({ id: 3, title: "Login" }),
     };
     AcceptanceCriteria.findOne.mockResolvedValue(criterion);
     const req = { params: { criterionId: "5" }, body: { content: "Nice" } };
@@ -272,7 +381,11 @@ describe("createForCriterion", () => {
   });
 
   it("responds 400 when the content is missing", async () => {
-    const criterion = { id: 5, createComment: jest.fn() };
+    const criterion = {
+      id: 5,
+      createComment: jest.fn(),
+      getStory: jest.fn().mockResolvedValue({ id: 3, title: "Login" }),
+    };
     AcceptanceCriteria.findOne.mockResolvedValue(criterion);
     const req = { params: { criterionId: "5" }, body: {} };
     const res = mockRes();
@@ -284,6 +397,41 @@ describe("createForCriterion", () => {
       message: "Comment must have content.",
     });
     expect(criterion.createComment).not.toHaveBeenCalled();
+  });
+
+  it("emails mentioned users with both story and criterion context", async () => {
+    const created = mockComment({
+      content: '<span data-id="7"></span>',
+    });
+    const parentStory = { id: 3, title: "Login" };
+    const criterion = {
+      id: 5,
+      title: "It works",
+      createComment: jest.fn().mockResolvedValue(created),
+      getStory: jest.fn().mockResolvedValue(parentStory),
+    };
+    AcceptanceCriteria.findOne.mockResolvedValue(criterion);
+    const mentioned = { id: 7, email: "bob@test.dev" };
+    User.findAll.mockResolvedValue([mentioned]);
+    const res = mockRes();
+
+    await controller.createForCriterion(
+      { params: { criterionId: "5" }, body: { content: "x" } },
+      res,
+    );
+
+    expect(email.notifyMentionedUser).toHaveBeenCalledTimes(1);
+    const context = email.notifyMentionedUser.mock.calls[0][3];
+    expect(context).toEqual([
+      { label: "Story", value: "Login", url: "http://example.test/story" },
+      {
+        label: "Acceptance Criteria",
+        value: "It works",
+        url: "http://example.test/story",
+      },
+    ]);
+    expect(email.storyUrl).toHaveBeenCalledWith(parentStory, { acId: 5 });
+    expect(res.send).toHaveBeenCalledWith(created);
   });
 });
 

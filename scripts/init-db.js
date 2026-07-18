@@ -105,6 +105,14 @@ const run = async () => {
       password: passwordHash,
       salt: salt,
     });
+    const isaiah = await db.user.create({
+      firstName: "Isaiah",
+      lastName: "Fisher",
+      isAdmin: true,
+      email: "isaiah.fisher@eagles.oc.edu",
+      password: passwordHash,
+      salt: salt,
+    });
 
     const session = await db.session.create({
       email: user.email,
@@ -149,6 +157,11 @@ const run = async () => {
     const memberGrace = await db.projectMember.create({
       isManager: false,
       userId: grace.id,
+      projectId: project.id,
+    });
+    const memberIsaiah = await db.projectMember.create({
+      isManager: false,
+      userId: isaiah.id,
       projectId: project.id,
     });
 
@@ -606,6 +619,11 @@ const run = async () => {
       userId: erin.id,
       projectId: project2.id,
     });
+    const member2Isaiah = await db.projectMember.create({
+      isManager: false,
+      userId: isaiah.id,
+      projectId: project2.id,
+    });
 
     const p2StateTodo = await db.storyState.create({
       name: "To Do",
@@ -709,6 +727,11 @@ const run = async () => {
       userId: grace.id,
       projectId: project3.id,
     });
+    const member3Isaiah = await db.projectMember.create({
+      isManager: false,
+      userId: isaiah.id,
+      projectId: project3.id,
+    });
 
     const p3StateBacklog = await db.storyState.create({
       name: "Backlog",
@@ -761,6 +784,7 @@ const run = async () => {
         erin.id,
         frank.id,
         grace.id,
+        isaiah.id,
       ],
       projectIds: [project.id, project2.id, project3.id],
       repositoryIds: [repository.id, repositoryFrontend.id],

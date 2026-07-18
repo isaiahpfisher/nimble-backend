@@ -7,7 +7,11 @@ const Sprint = db.sprint;
 const AcceptanceCriteria = db.acceptanceCriteria;
 const Op = db.Sequelize.Op;
 const { httpError } = require("../utils/httpUtils");
-
+const {
+  notifyAssignedUser,
+  notifyReviewerUser,
+  storyUrl,
+} = require("../utils/email");
 
 exports.findAll = async (req, res) => {
   try {
@@ -163,6 +167,25 @@ exports.create = async (req, res) => {
 
     const data = await Story.create(story);
 
+    const activeUser = await User.findByPk(userId);
+    const context = [
+      { label: "Story", value: data.title, url: storyUrl(data) },
+    ];
+
+    if (data.assigneeId && data.assigneeId !== userId) {
+      const assignee = await User.findByPk(data.assigneeId);
+      if (assignee) {
+        await notifyAssignedUser(assignee, activeUser, data, context);
+      }
+    }
+
+    if (data.reviewerId && data.reviewerId !== userId) {
+      const reviewer = await User.findByPk(data.reviewerId);
+      if (reviewer) {
+        await notifyReviewerUser(reviewer, activeUser, data, context);
+      }
+    }
+
     res.send(data);
   } catch (err) {
     res.status(err.statusCode || 500).send({
@@ -175,7 +198,7 @@ exports.update = async (req, res) => {
   const storyId = req.params.storyId;
 
   try {
-    await authenticate(req, res);
+    const { userId } = await authenticate(req, res);
 
     if (
       !req.body.title ||
@@ -195,6 +218,33 @@ exports.update = async (req, res) => {
 
     if (!story) {
       throw httpError(`Cannot find Story with id = ${storyId}.`, 404);
+    }
+
+    const activeUser = await User.findByPk(userId);
+    const context = [
+      { label: "Story", value: story.title, url: storyUrl(story) },
+    ];
+
+    if (
+      req.body.assigneeId &&
+      req.body.assigneeId != story.assigneeId &&
+      req.body.assigneeId != userId
+    ) {
+      const assignee = await User.findByPk(req.body.assigneeId);
+      if (assignee) {
+        await notifyAssignedUser(assignee, activeUser, story, context);
+      }
+    }
+
+    if (
+      req.body.reviewerId &&
+      req.body.reviewerId != story.reviewerId &&
+      req.body.reviewerId != userId
+    ) {
+      const reviewer = await User.findByPk(req.body.reviewerId);
+      if (reviewer) {
+        await notifyReviewerUser(reviewer, activeUser, story, context);
+      }
     }
 
     await story.update({

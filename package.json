@@ -46,6 +46,7 @@
     "passport-github2": "^0.1.12",
     "pg": "^8.22.0",
     "pg-hstore": "^2.3.4",
+    "resend": "^6.17.2",
     "sequelize": "^6.19.0",
     "supertest": "^6.3.3"
   }

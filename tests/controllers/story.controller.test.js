@@ -9,9 +9,12 @@ jest.mock("../../app/models", () => ({
   project: {
     findByPk: jest.fn(),
   },
+  // user needs a real finder now that create/update look up the acting user
+  // and the assignee/reviewer to notify them; `name` keeps it usable as an
+  // association sentinel in the eager-load assertions.
+  user: { name: "user", findByPk: jest.fn() },
   // Sentinels for the associations the finders eager-load; the controller only
   // passes these through to Sequelize, so identity is all the tests need.
-  user: { name: "user" },
   storyState: { name: "storyState" },
   storyType: { name: "storyType" },
   repository: { name: "repository" },
@@ -22,9 +25,19 @@ jest.mock("../../app/models", () => ({
   Sequelize: { Op: {} },
 }));
 
+// Assignment/review notifications go out over Resend; stub the email util so
+// requiring the controller never builds a real client and no mail is sent.
+jest.mock("../../app/utils/email", () => ({
+  notifyAssignedUser: jest.fn().mockResolvedValue(undefined),
+  notifyReviewerUser: jest.fn().mockResolvedValue(undefined),
+  storyUrl: jest.fn(() => "http://example.test/story"),
+}));
+
 const db = require("../../app/models");
 const Story = db.story;
 const Project = db.project;
+const User = db.user;
+const email = require("../../app/utils/email");
 const controller = require("../../app/controllers/story.controller");
 
 // The controller calls a bare `authenticate(...)`, which resolves to the global
@@ -56,6 +69,10 @@ beforeEach(() => {
   jest.clearAllMocks();
   authenticate = jest.fn().mockResolvedValue({ userId: 42 });
   global.authenticate = authenticate;
+  // Default lookup for the acting user and any assignee/reviewer being notified.
+  User.findByPk.mockImplementation((id) =>
+    Promise.resolve({ id, firstName: "User", lastName: String(id), email: `${id}@test.dev` }),
+  );
 });
 
 afterEach(() => {
@@ -287,6 +304,57 @@ describe("create", () => {
     expect(res.status).toHaveBeenCalledWith(500);
     expect(res.send).toHaveBeenCalledWith({ message: "constraint violation" });
   });
+
+  it("emails the assignee and reviewer of a newly created story", async () => {
+    Project.findByPk.mockResolvedValue({ id: 1 });
+    const created = { id: 9, title: "Add login page", assigneeId: 6, reviewerId: 7 };
+    Story.create.mockResolvedValue(created);
+    const res = mockRes();
+
+    await controller.create(
+      { params: { id: "1" }, body: storyBody({ assigneeId: 6, reviewerId: 7 }) },
+      res,
+    );
+
+    expect(email.notifyAssignedUser).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 6 }),
+      expect.objectContaining({ id: 42 }),
+      created,
+      [{ label: "Story", value: "Add login page", url: "http://example.test/story" }],
+    );
+    expect(email.notifyReviewerUser).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 7 }),
+      expect.objectContaining({ id: 42 }),
+      created,
+      expect.any(Array),
+    );
+    expect(res.send).toHaveBeenCalledWith(created);
+  });
+
+  it("does not notify when the creator assigns/reviews the story themselves", async () => {
+    Project.findByPk.mockResolvedValue({ id: 1 });
+    Story.create.mockResolvedValue({ id: 9, assigneeId: 42, reviewerId: 42 });
+    const res = mockRes();
+
+    await controller.create(
+      { params: { id: "1" }, body: storyBody({ assigneeId: 42, reviewerId: 42 }) },
+      res,
+    );
+
+    expect(email.notifyAssignedUser).not.toHaveBeenCalled();
+    expect(email.notifyReviewerUser).not.toHaveBeenCalled();
+  });
+
+  it("sends no notifications for a story with no assignee or reviewer", async () => {
+    Project.findByPk.mockResolvedValue({ id: 1 });
+    Story.create.mockResolvedValue({ id: 9 });
+    const res = mockRes();
+
+    await controller.create({ params: { id: "1" }, body: storyBody() }, res);
+
+    expect(email.notifyAssignedUser).not.toHaveBeenCalled();
+    expect(email.notifyReviewerUser).not.toHaveBeenCalled();
+  });
 });
 
 describe("update", () => {
@@ -404,6 +472,83 @@ describe("update", () => {
 
     expect(res.status).toHaveBeenCalledWith(500);
     expect(res.send).toHaveBeenCalledWith({ message: "write failed" });
+  });
+
+  it("emails a newly assigned user and reviewer on update", async () => {
+    const story = {
+      id: 7,
+      title: "Login",
+      assigneeId: 1,
+      reviewerId: 2,
+      update: jest.fn().mockResolvedValue(undefined),
+    };
+    Story.findByPk.mockResolvedValue(story);
+    const res = mockRes();
+
+    await controller.update(
+      {
+        params: { storyId: "7" },
+        body: storyBody({ assigneeId: 6, reviewerId: 8 }),
+      },
+      res,
+    );
+
+    expect(email.notifyAssignedUser).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 6 }),
+      expect.objectContaining({ id: 42 }),
+      story,
+      expect.any(Array),
+    );
+    expect(email.notifyReviewerUser).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 8 }),
+      expect.objectContaining({ id: 42 }),
+      story,
+      expect.any(Array),
+    );
+  });
+
+  it("does not re-notify when the assignee and reviewer are unchanged", async () => {
+    const story = {
+      id: 7,
+      assigneeId: 6,
+      reviewerId: 8,
+      update: jest.fn().mockResolvedValue(undefined),
+    };
+    Story.findByPk.mockResolvedValue(story);
+    const res = mockRes();
+
+    await controller.update(
+      {
+        params: { storyId: "7" },
+        body: storyBody({ assigneeId: 6, reviewerId: 8 }),
+      },
+      res,
+    );
+
+    expect(email.notifyAssignedUser).not.toHaveBeenCalled();
+    expect(email.notifyReviewerUser).not.toHaveBeenCalled();
+  });
+
+  it("does not notify when a user assigns/reviews the story to themselves", async () => {
+    const story = {
+      id: 7,
+      assigneeId: 1,
+      reviewerId: 2,
+      update: jest.fn().mockResolvedValue(undefined),
+    };
+    Story.findByPk.mockResolvedValue(story);
+    const res = mockRes();
+
+    await controller.update(
+      {
+        params: { storyId: "7" },
+        body: storyBody({ assigneeId: 42, reviewerId: 42 }),
+      },
+      res,
+    );
+
+    expect(email.notifyAssignedUser).not.toHaveBeenCalled();
+    expect(email.notifyReviewerUser).not.toHaveBeenCalled();
   });
 });
 
