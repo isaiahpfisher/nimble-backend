@@ -5,12 +5,12 @@ const Op = db.Sequelize.Op;
 const { httpError } = require("../utils/httpUtils");
 
 // helper functions for validation
-async function findStoryOrFail(projectId, storyId) {
+async function findStoryOrFail(id, projectId) {
   const story = await Story.findOne({
-    where: { id: storyId, projectId: projectId },
+    where: { id, projectId },
   });
   if (!story) {
-    throw httpError(`Cannot find Story with id = ${storyId}.`, 404);
+    throw httpError(`Cannot find Story with id = ${id}.`, 404);
   }
   return story;
 }
@@ -39,7 +39,7 @@ exports.findAll = async (req, res) => {
 exports.create = async (req, res) => {
   try {
     await authenticate(req, res);
-    await findStoryOrFail(req.params.projectId, req.params.storyId, req.userId);
+    await findStoryOrFail(req.params.storyId, req.params.projectId);
     validate(req.body);
 
     const criterion = await AcceptanceCriteria.create({
@@ -60,7 +60,7 @@ exports.create = async (req, res) => {
 exports.update = async (req, res) => {
   try {
     await authenticate(req, res);
-    await findStoryOrFail(req.params.projectId, req.params.storyId);
+    await findStoryOrFail(req.params.storyId, req.params.projectId);
     validate(req.body);
 
     const criterion = await AcceptanceCriteria.findOne({
@@ -91,7 +91,7 @@ exports.update = async (req, res) => {
 exports.delete = async (req, res) => {
   try {
     await authenticate(req, res);
-    await findStoryOrFail(req.params.projectId, req.params.storyId);
+    await findStoryOrFail(req.params.storyId, req.params.projectId);
 
     const acceptanceCriteria = await AcceptanceCriteria.findOne({
       where: { id: req.params.criterionId, storyId: req.params.storyId },

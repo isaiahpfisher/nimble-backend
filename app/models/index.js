@@ -274,12 +274,24 @@ db.acceptanceCriteria.belongsTo(db.story, {
 // comment <-> story
 db.story.hasMany(db.comment, {
   as: "comment",
-  foreignKey: { allowNull: false },
+  foreignKey: { name: "storyId", allowNull: true },
   onDelete: "CASCADE",
 });
 db.comment.belongsTo(db.story, {
   as: "story",
-  foreignKey: { allowNull: false },
+  foreignKey: { name: "storyId", allowNull: true },
+  onDelete: "CASCADE",
+});
+
+// comment <-> acceptanceCriteria
+db.acceptanceCriteria.hasMany(db.comment, {
+  as: "comment",
+  foreignKey: { name: "acceptanceCriteriaId", allowNull: true },
+  onDelete: "CASCADE",
+});
+db.comment.belongsTo(db.acceptanceCriteria, {
+  as: "acceptanceCriteria",
+  foreignKey: { name: "acceptanceCriteriaId", allowNull: true },
   onDelete: "CASCADE",
 });
 

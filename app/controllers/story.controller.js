@@ -8,6 +8,7 @@ const AcceptanceCriteria = db.acceptanceCriteria;
 const Op = db.Sequelize.Op;
 const { httpError } = require("../utils/httpUtils");
 
+
 exports.findAll = async (req, res) => {
   try {
     const data = await Story.findAll();
