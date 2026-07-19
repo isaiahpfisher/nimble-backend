@@ -73,6 +73,8 @@ exports.findOne = async (req, res) => {
         { model: db.storyState, as: "storyState" },
         { model: db.sprint, as: "sprint" },
         { model: db.repository, as: "repository" },
+        { model: db.storyState, as: "branchCreationState" },
+        { model: db.storyState, as: "prReviewState" },
         {
           model: db.projectMember,
           as: "projectMembers",
@@ -214,8 +216,20 @@ exports.update = async (req, res) => {
       }
     }
 
-    const { title, description, deadline } = req.body;
-    await project.update({ title, description, deadline });
+    const {
+      title,
+      description,
+      deadline,
+      branchCreationStateId,
+      prReviewStateId,
+    } = req.body;
+    await project.update({
+      title,
+      description,
+      deadline,
+      branchCreationStateId,
+      prReviewStateId,
+    });
 
     res.send(project);
   } catch (err) {

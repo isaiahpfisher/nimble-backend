@@ -3,7 +3,6 @@ const StoryType = db.storyType;
 const Story = db.story;
 const Op = db.Sequelize.Op;
 const Sequelize = db.Sequelize;
-
 const { httpError } = require("../utils/httpUtils");
 
 exports.findAll = async (req, res) => {

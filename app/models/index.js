@@ -97,6 +97,28 @@ db.storyState.belongsTo(db.project, {
   onDelete: "CASCADE",
 });
 
+// project <-> storyState (GitHub automation stuff)
+db.storyState.hasMany(db.project, {
+  as: "branchCreationForProject",
+  foreignKey: { name: "branchCreationStateId", allowNull: true },
+  onDelete: "SET NULL",
+});
+db.project.belongsTo(db.storyState, {
+  as: "branchCreationState",
+  foreignKey: { name: "branchCreationStateId", allowNull: true },
+  onDelete: "SET NULL",
+});
+db.storyState.hasMany(db.project, {
+  as: "prReviewForProject",
+  foreignKey: { name: "prReviewStateId", allowNull: true },
+  onDelete: "SET NULL",
+});
+db.project.belongsTo(db.storyState, {
+  as: "prReviewState",
+  foreignKey: { name: "prReviewStateId", allowNull: true },
+  onDelete: "SET NULL",
+});
+
 // project <-> storyType
 db.project.hasMany(db.storyType, {
   as: "storyType",
