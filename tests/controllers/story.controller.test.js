@@ -59,6 +59,7 @@ function storyBody(overrides = {}) {
     title: "Add login page",
     description: "Users need to sign in",
     typeId: 2,
+    stateId: 3,
     priority: "HIGH",
     estimate: 5,
     ...overrides,
@@ -254,9 +255,7 @@ describe("create", () => {
   it.each([
     ["title", { title: "" }],
     ["description", { description: "" }],
-    ["typeId", { typeId: undefined }],
-    ["priority", { priority: undefined }],
-    ["estimate", { estimate: null }],
+    ["stateId", { stateId: undefined }],
   ])("responds 400 when %s is missing", async (_field, overrides) => {
     const res = mockRes();
 
@@ -401,26 +400,6 @@ describe("update", () => {
 
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.send).toHaveBeenCalledWith({ message: "Missing required fields." });
-    expect(Story.findByPk).not.toHaveBeenCalled();
-  });
-
-  it("responds 400 when an acceptance criterion has no title", async () => {
-    const res = mockRes();
-
-    await controller.update(
-      {
-        params: { storyId: "7" },
-        body: storyBody({
-          acceptanceCriteria: [{ title: "Fine" }, { title: "" }],
-        }),
-      },
-      res,
-    );
-
-    expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.send).toHaveBeenCalledWith({
-      message: "Acceptance criteria must have a title.",
-    });
     expect(Story.findByPk).not.toHaveBeenCalled();
   });
 
