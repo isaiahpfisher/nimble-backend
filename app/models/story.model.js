@@ -10,11 +10,11 @@ module.exports = (sequelize, Sequelize) => {
     },
     priority: {
       type: Sequelize.STRING,
-      allowNull: false,
+      allowNull: true,
     },
     estimate: {
       type: Sequelize.INTEGER,
-      allowNull: false,
+      allowNull: true,
     },
   });
 

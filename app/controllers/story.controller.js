@@ -134,7 +134,7 @@ exports.create = async (req, res) => {
     const { userId } = await authenticate(req, res);
     const projectId = req.params.id;
 
-    if (!req.body.title || !req.body.description) {
+    if (!req.body.title || !req.body.description || !req.body.stateId) {
       throw httpError("Missing required fields.", 400);
     }
 
@@ -194,12 +194,8 @@ exports.update = async (req, res) => {
   try {
     const { userId } = await authenticate(req, res);
 
-    if (!req.body.title || !req.body.description) {
+    if (!req.body.title || !req.body.description || !req.body.stateId) {
       throw httpError("Missing required fields.", 400);
-    }
-
-    if (req.body.acceptanceCriteria?.some((ac) => !ac.title)) {
-      throw httpError("Acceptance criteria must have a title.", 400);
     }
 
     const story = await Story.findByPk(storyId);

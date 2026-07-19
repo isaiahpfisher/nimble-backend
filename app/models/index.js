@@ -196,13 +196,13 @@ db.story.belongsTo(db.storyState, {
 // story <-> storyType
 db.storyType.hasMany(db.story, {
   as: "story",
-  foreignKey: { name: "typeId", allowNull: false },
-  onDelete: "CASCADE",
+  foreignKey: { name: "typeId", allowNull: true },
+  onDelete: "SET NULL",
 });
 db.story.belongsTo(db.storyType, {
   as: "type",
-  foreignKey: { name: "typeId", allowNull: false },
-  onDelete: "CASCADE",
+  foreignKey: { name: "typeId", allowNull: true },
+  onDelete: "SET NULL",
 });
 
 // story <-> user (reporter, assignee, reviewer)
