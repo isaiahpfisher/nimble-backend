@@ -3,8 +3,31 @@ module.exports = (app) => {
   const { authenticateRoute } = require("../authentication/authentication");
   var router = require("express").Router();
 
-  // Retrieve all StoryType
   router.get("/storyTypes/", StoryType.findAll);
+
+  router.get(
+    "/projects/:projectId/storyTypes/",
+    authenticateRoute,
+    StoryType.findAllForProject,
+  );
+
+  router.post(
+    "/projects/:projectId/storyTypes/",
+    authenticateRoute,
+    StoryType.create,
+  );
+
+  router.put(
+    "/projects/:projectId/storyTypes/:typeId",
+    authenticateRoute,
+    StoryType.update,
+  );
+
+  router.delete(
+    "/projects/:projectId/storyTypes/:typeId",
+    authenticateRoute,
+    StoryType.delete,
+  );
 
   app.use("/nimbleapi", router);
 };

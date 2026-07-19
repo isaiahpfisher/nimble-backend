@@ -12,8 +12,8 @@ jest.mock("../../app/models", () => ({
   // Sentinels for the associations findOne eager-loads; the controller only
   // passes these through to Sequelize, so identity is all the tests need.
   user: { name: "user" },
-  storyType: { name: "storyType" },
-  storyState: { name: "storyState" },
+  storyType: { name: "storyType", bulkCreate: jest.fn() },
+  storyState: { name: "storyState", bulkCreate: jest.fn() },
   sprint: { name: "sprint" },
   repository: { name: "repository" },
   Sequelize: { Op: {} },
@@ -188,6 +188,16 @@ describe("create", () => {
       projectId: 5,
       isManager: true,
     });
+    // The new project is seeded with the default story types and states,
+    // each scoped to the project that was just created.
+    expect(db.storyType.bulkCreate).toHaveBeenCalledTimes(1);
+    const seededTypes = db.storyType.bulkCreate.mock.calls[0][0];
+    expect(seededTypes.length).toBeGreaterThan(0);
+    expect(seededTypes.every((t) => t.projectId === 5)).toBe(true);
+    expect(db.storyState.bulkCreate).toHaveBeenCalledTimes(1);
+    const seededStates = db.storyState.bulkCreate.mock.calls[0][0];
+    expect(seededStates.length).toBeGreaterThan(0);
+    expect(seededStates.every((s) => s.projectId === 5)).toBe(true);
     expect(res.send).toHaveBeenCalledWith(created);
     expect(res.status).not.toHaveBeenCalled();
   });

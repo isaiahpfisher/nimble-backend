@@ -4,14 +4,10 @@ module.exports = (sequelize, Sequelize) => {
       type: Sequelize.STRING,
       allowNull: false,
     },
-    type: {
-      type: Sequelize.STRING,
-      allowNull: false,
-    },
     order: {
       type: Sequelize.INTEGER,
       allowNull: false,
-    }
+    },
   });
 
   return StoryState;

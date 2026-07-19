@@ -1,10 +1,26 @@
 const db = require("../models");
 const Project = db.project;
 const ProjectMember = db.projectMember;
+const StoryType = db.storyType;
+const StoryState = db.storyState;
 const User = db.user;
 const { authenticate } = require("../authentication/authentication");
 const Op = db.Sequelize.Op;
 const { httpError } = require("../utils/httpUtils");
+
+const DEFAULT_PROJECT_STORY_TYPES = [
+  { name: "Feature" },
+  { name: "Bug" },
+  { name: "Chore" },
+];
+
+const DEFAULT_PROJECT_STORY_STATES = [
+  { name: "Not Started", order: 1 },
+  { name: "In Progress", order: 2 },
+  { name: "Ready for Test", order: 3 },
+  { name: "In Test", order: 4 },
+  { name: "Done", order: 5 },
+];
 
 exports.findAll = async (req, res) => {
   try {
@@ -111,6 +127,13 @@ exports.create = async (req, res) => {
       isManager: true,
     });
 
+    await StoryType.bulkCreate(
+      DEFAULT_PROJECT_STORY_TYPES.map((t) => ({ ...t, projectId: data.id })),
+    );
+    await StoryState.bulkCreate(
+      DEFAULT_PROJECT_STORY_STATES.map((s) => ({ ...s, projectId: data.id })),
+    );
+
     res.send(data);
   } catch (err) {
     res.status(err.statusCode || 500).send({
@@ -153,6 +176,19 @@ exports.adminCreate = async (req, res) => {
       projectId: data.id,
       isManager: true,
     });
+
+    await StoryType.bulkCreate(
+      DEFAULT_PROJECT_STORY_TYPES.map((t) => ({
+        ...t,
+        projectId: data.id,
+      })),
+    );
+    await StoryState.bulkCreate(
+      DEFAULT_PROJECT_STORY_STATES.map((s) => ({
+        ...s,
+        projectId: data.id,
+      })),
+    );
 
     res.send(data);
   } catch (err) {
