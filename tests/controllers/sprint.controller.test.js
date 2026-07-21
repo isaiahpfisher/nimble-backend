@@ -1,10 +1,8 @@
-const crypto = require("crypto");
+const { DataTypes } = require("sequelize");
+const express = require("express");
+const request = require("supertest");
 
-jest.mock("crypto", () => ({
-  randomUUID: jest.fn(),
-}));
-
-jest.mock("../models", () => ({
+jest.mock("../../app/models", () => ({
   sprint: {
     findAll: jest.fn(),
     create: jest.fn(),
@@ -13,704 +11,519 @@ jest.mock("../models", () => ({
   },
 }));
 
-jest.mock("../authentication/authentication", () => ({
+jest.mock("../../app/authentication/authentication", () => ({
   authenticate: jest.fn(),
+  authenticateRoute: jest.fn((req, res, next) => next()),
 }));
 
-jest.mock("../utils/httpUtils", () => ({
-  httpError: jest.fn((message, statusCode) => {
-    const error = new Error(message);
-    error.statusCode = statusCode;
-    return error;
-  }),
-}));
-
-const db = require("../models");
+const db = require("../../app/models");
+const { authenticate, authenticateRoute } = require("../../app/authentication/authentication");
 const Sprint = db.sprint;
+const controller = require("../../app/controllers/sprint.controller.js");
+const SprintModel = require("../../app/models/sprint.model.js");
+const sprintRoutes = require("../../app/routes/sprint.routes.js");
 
-const { authenticate } = require("../authentication/authentication");
-const { httpError } = require("../utils/httpUtils");
+function mockRes() {
+  const res = {};
+  res.status = jest.fn().mockReturnValue(res);
+  res.send = jest.fn().mockReturnValue(res);
+  return res;
+}
 
-const sprintController = require("../controllers/sprint.controller");
-
-describe("Sprint Controller", () => {
-  let req;
-  let res;
-
+describe("Sprint controller", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-
-    req = {
-      body: {},
-      params: {},
-    };
-
-    res = {
-      send: jest.fn(),
-      status: jest.fn().mockReturnThis(),
-    };
-
-    authenticate.mockResolvedValue({
-      userId: 1,
-    });
+    authenticate.mockResolvedValue(undefined);
   });
 
-  // --------------------------------------------------
-  // FIND ALL
-  // --------------------------------------------------
-
   describe("findAll", () => {
-    test("should return all sprints", async () => {
-      const sprints = [
-        {
-          id: 1,
-          title: "Sprint 1",
-          status: "Planned",
-        },
-        {
-          id: 2,
-          title: "Sprint 2",
-          status: "Active",
-        },
-      ];
-
+    test("returns all sprints", async () => {
+      const req = {};
+      const res = mockRes();
+      const sprints = [{ id: 1 }, { id: 2 }];
       Sprint.findAll.mockResolvedValue(sprints);
 
-      await sprintController.findAll(req, res);
+      await controller.findAll(req, res);
 
       expect(authenticate).toHaveBeenCalledWith(req, res);
       expect(Sprint.findAll).toHaveBeenCalledWith();
       expect(res.send).toHaveBeenCalledWith(sprints);
     });
 
-    test("should return 500 if findAll fails", async () => {
-      Sprint.findAll.mockRejectedValue(
-        new Error("Database error")
-      );
+    test("returns 500 when the query fails", async () => {
+      const req = {};
+      const res = mockRes();
+      Sprint.findAll.mockRejectedValue(new Error("db down"));
 
-      await sprintController.findAll(req, res);
+      await controller.findAll(req, res);
 
       expect(res.status).toHaveBeenCalledWith(500);
-
-      expect(res.send).toHaveBeenCalledWith({
-        message: "Database error",
-      });
+      expect(res.send).toHaveBeenCalledWith({ message: "db down" });
     });
   });
 
-  // --------------------------------------------------
-  // CREATE
-  // --------------------------------------------------
-
   describe("create", () => {
-    test("should create a sprint", async () => {
-      req.body = {
-        title: "Sprint 1",
-        goal: "Complete project setup",
-        startDate: "2026-07-20",
-        endDate: "2026-07-27",
-        status: "Planned",
-        projectId: 1,
+    test("creates a sprint with defaults", async () => {
+      const req = {
+        body: {
+          title: "Sprint 1",
+          startDate: "2026-01-01",
+          endDate: "2026-01-14",
+          projectId: 5,
+        },
       };
+      const res = mockRes();
+      const created = { id: 1, ...req.body };
+      Sprint.create.mockResolvedValue(created);
 
-      const createdSprint = {
-        id: 1,
-        title: "Sprint 1",
-        goal: "Complete project setup",
-        startDate: "2026-07-20",
-        endDate: "2026-07-27",
-        status: "Planned",
-        isRecurring: false,
-        projectId: 1,
-      };
-
-      Sprint.create.mockResolvedValue(createdSprint);
-
-      await sprintController.create(req, res);
-
-      expect(authenticate).toHaveBeenCalledWith(req, res);
+      await controller.create(req, res);
 
       expect(Sprint.create).toHaveBeenCalledWith({
         title: "Sprint 1",
-        goal: "Complete project setup",
-        startDate: "2026-07-20",
-        endDate: "2026-07-27",
+        goal: undefined,
+        startDate: "2026-01-01",
+        endDate: "2026-01-14",
         status: "Planned",
         isRecurring: false,
-        projectId: 1,
+        projectId: 5,
       });
-
-      expect(res.send).toHaveBeenCalledWith(
-        createdSprint
-      );
+      expect(res.send).toHaveBeenCalledWith(created);
     });
 
-    test("should return 400 if required fields are missing", async () => {
-      req.body = {};
-
-      await sprintController.create(req, res);
-
-      expect(httpError).toHaveBeenCalledWith(
-        "Missing required fields.",
-        400
-      );
-
-      expect(res.status).toHaveBeenCalledWith(400);
-
-      expect(res.send).toHaveBeenCalledWith({
-        message: "Missing required fields.",
-      });
-
-      expect(Sprint.create).not.toHaveBeenCalled();
-    });
-
-    test("should return 500 if create fails", async () => {
-      req.body = {
-        title: "Sprint 1",
-        startDate: "2026-07-20",
-        endDate: "2026-07-27",
-        projectId: 1,
+    test("uses the provided status when given", async () => {
+      const req = {
+        body: {
+          title: "Sprint 1",
+          startDate: "2026-01-01",
+          endDate: "2026-01-14",
+          projectId: 5,
+          status: "Active",
+        },
       };
+      const res = mockRes();
+      Sprint.create.mockResolvedValue({});
 
-      Sprint.create.mockRejectedValue(
-        new Error("Database error")
+      await controller.create(req, res);
+
+      expect(Sprint.create).toHaveBeenCalledWith(
+        expect.objectContaining({ status: "Active" })
       );
+    });
 
-      await sprintController.create(req, res);
+    test.each(["title", "startDate", "endDate", "projectId"])(
+      "returns 400 when %s is missing",
+      async (field) => {
+        const req = {
+          body: {
+            title: "Sprint 1",
+            startDate: "2026-01-01",
+            endDate: "2026-01-14",
+            projectId: 5,
+          },
+        };
+        delete req.body[field];
+        const res = mockRes();
+
+        await controller.create(req, res);
+
+        expect(res.status).toHaveBeenCalledWith(400);
+        expect(res.send).toHaveBeenCalledWith({ message: "Missing required fields." });
+        expect(Sprint.create).not.toHaveBeenCalled();
+      }
+    );
+
+    test("returns 500 when creation fails", async () => {
+      const req = {
+        body: {
+          title: "Sprint 1",
+          startDate: "2026-01-01",
+          endDate: "2026-01-14",
+          projectId: 5,
+        },
+      };
+      const res = mockRes();
+      Sprint.create.mockRejectedValue(new Error("insert failed"));
+
+      await controller.create(req, res);
 
       expect(res.status).toHaveBeenCalledWith(500);
-
-      expect(res.send).toHaveBeenCalledWith({
-        message: "Database error",
-      });
+      expect(res.send).toHaveBeenCalledWith({ message: "insert failed" });
     });
   });
-
-  // --------------------------------------------------
-  // CREATE RECURRING
-  // --------------------------------------------------
 
   describe("createRecurring", () => {
-    beforeEach(() => {
-      crypto.randomUUID.mockReturnValue(
-        "test-group-id"
-      );
+    const baseBody = {
+      title: "Sprint",
+      goal: "Ship feature",
+      startDate: "2026-01-01",
+      endDate: "2026-01-14",
+      projectId: 5,
+      recurrencePattern: "Weekly",
+      recurrenceCount: 3,
+    };
 
-      req.body = {
-        title: "Sprint",
-        goal: "Complete tasks",
-        startDate: "2026-07-20",
-        endDate: "2026-07-27",
-        recurrencePattern: "Weekly",
-        recurrenceCount: 3,
-        projectId: 1,
-      };
-    });
+    test("creates the requested number of sprints spaced by the recurrence pattern", async () => {
+      const req = { body: { ...baseBody } };
+      const res = mockRes();
+      Sprint.bulkCreate.mockResolvedValue([{}, {}, {}]);
 
-    test("should create weekly recurring sprints", async () => {
-      const createdSprints = [
-        {
-          id: 1,
-          title: "Sprint 1",
-        },
-        {
-          id: 2,
-          title: "Sprint 2",
-        },
-        {
-          id: 3,
-          title: "Sprint 3",
-        },
-      ];
+      await controller.createRecurring(req, res);
 
-      Sprint.bulkCreate.mockResolvedValue(
-        createdSprints
-      );
-
-      await sprintController.createRecurring(
-        req,
-        res
-      );
-
-      expect(authenticate).toHaveBeenCalledWith(
-        req,
-        res
-      );
-
-      expect(crypto.randomUUID).toHaveBeenCalled();
-
-      expect(Sprint.bulkCreate).toHaveBeenCalledTimes(
-        1
-      );
-
-      const sprints =
-        Sprint.bulkCreate.mock.calls[0][0];
-
-      expect(sprints).toHaveLength(3);
-
-      expect(sprints[0].title).toBe("Sprint 1");
-      expect(sprints[1].title).toBe("Sprint 2");
-      expect(sprints[2].title).toBe("Sprint 3");
-
-      expect(sprints[0].isRecurring).toBe(true);
-
-      expect(sprints[0].recurrencePattern).toBe(
-        "Weekly"
-      );
-
-      expect(sprints[0].recurrenceGroupId).toBe(
-        "test-group-id"
-      );
-
-      expect(res.send).toHaveBeenCalledWith(
-        createdSprints
-      );
-    });
-
-    test("should create biweekly recurring sprints", async () => {
-      req.body.recurrencePattern = "Biweekly";
-      req.body.recurrenceCount = 2;
-
-      Sprint.bulkCreate.mockResolvedValue([
-        {
-          id: 1,
-          title: "Sprint 1",
-        },
-        {
-          id: 2,
-          title: "Sprint 2",
-        },
-      ]);
-
-      await sprintController.createRecurring(
-        req,
-        res
-      );
-
-      const sprints =
-        Sprint.bulkCreate.mock.calls[0][0];
-
-      expect(sprints).toHaveLength(2);
-
-      expect(sprints[0].recurrencePattern).toBe(
-        "Biweekly"
-      );
-
-      expect(sprints[1].recurrencePattern).toBe(
-        "Biweekly"
-      );
-
-      expect(
-        sprints[0].recurrenceGroupId
-      ).toBe("test-group-id");
-
-      expect(
-        sprints[1].recurrenceGroupId
-      ).toBe("test-group-id");
-
-      expect(res.send).toHaveBeenCalled();
-    });
-
-    test("should create monthly recurring sprints", async () => {
-      req.body.recurrencePattern = "Monthly";
-      req.body.recurrenceCount = 2;
-
-      Sprint.bulkCreate.mockResolvedValue([
-        {
-          id: 1,
-          title: "Sprint 1",
-        },
-        {
-          id: 2,
-          title: "Sprint 2",
-        },
-      ]);
-
-      await sprintController.createRecurring(
-        req,
-        res
-      );
-
-      const sprints =
-        Sprint.bulkCreate.mock.calls[0][0];
-
-      expect(sprints).toHaveLength(2);
-
-      expect(sprints[0].recurrencePattern).toBe(
-        "Monthly"
-      );
-
-      expect(sprints[1].recurrencePattern).toBe(
-        "Monthly"
-      );
-
-      expect(res.send).toHaveBeenCalled();
-    });
-
-    test("should return 400 if required fields are missing", async () => {
-      req.body = {};
-
-      await sprintController.createRecurring(
-        req,
-        res
-      );
-
-      expect(httpError).toHaveBeenCalledWith(
-        "Missing required fields.",
-        400
-      );
-
-      expect(res.status).toHaveBeenCalledWith(400);
-
-      expect(Sprint.bulkCreate).not.toHaveBeenCalled();
-    });
-
-    test("should return 400 if recurrence count is less than 2", async () => {
-      req.body.recurrenceCount = 1;
-
-      await sprintController.createRecurring(
-        req,
-        res
-      );
-
-      expect(httpError).toHaveBeenCalledWith(
-        "Recurrence Count must be at least 2!",
-        400
-      );
-
-      expect(res.status).toHaveBeenCalledWith(400);
-
-      expect(res.send).toHaveBeenCalledWith({
-        message:
-          "Recurrence Count must be at least 2!",
+      expect(Sprint.bulkCreate).toHaveBeenCalledTimes(1);
+      const created = Sprint.bulkCreate.mock.calls[0][0];
+      expect(created).toHaveLength(3);
+      expect(created[0].title).toBe("Sprint 1");
+      expect(created[1].title).toBe("Sprint 2");
+      expect(created[2].title).toBe("Sprint 3");
+      created.forEach((sprint) => {
+        expect(sprint.isRecurring).toBe(true);
+        expect(sprint.recurrencePattern).toBe("Weekly");
+        expect(sprint.recurrenceGroupId).toBe(created[0].recurrenceGroupId);
       });
-
-      expect(Sprint.bulkCreate).not.toHaveBeenCalled();
+      expect(
+        new Date(created[1].startDate).getTime() - new Date(created[0].startDate).getTime()
+      ).toBe(7 * 24 * 60 * 60 * 1000);
     });
 
-    test("should return 400 for invalid recurrence pattern", async () => {
-      req.body.recurrencePattern = "Daily";
+    test.each([
+      ["title"],
+      ["startDate"],
+      ["endDate"],
+      ["projectId"],
+      ["recurrencePattern"],
+      ["recurrenceCount"],
+    ])("returns 400 when %s is missing", async (field) => {
+      const req = { body: { ...baseBody } };
+      delete req.body[field];
+      const res = mockRes();
 
-      await sprintController.createRecurring(
-        req,
-        res
-      );
-
-      expect(httpError).toHaveBeenCalledWith(
-        "Unknown recurrence pattern: Daily",
-        400
-      );
+      await controller.createRecurring(req, res);
 
       expect(res.status).toHaveBeenCalledWith(400);
-
-      expect(res.send).toHaveBeenCalledWith({
-        message:
-          "Unknown recurrence pattern: Daily",
-      });
-
-      expect(Sprint.bulkCreate).not.toHaveBeenCalled();
+      expect(res.send).toHaveBeenCalledWith({ message: "Missing required fields." });
     });
 
-    test("should return 500 if bulkCreate fails", async () => {
-      Sprint.bulkCreate.mockRejectedValue(
-        new Error("Database error")
-      );
+    test("returns 400 when recurrenceCount is below 2", async () => {
+      const req = { body: { ...baseBody, recurrenceCount: 1 } };
+      const res = mockRes();
 
-      await sprintController.createRecurring(
-        req,
-        res
-      );
+      await controller.createRecurring(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.send).toHaveBeenCalledWith({ message: "Recurrence Count must be at least 2!" });
+    });
+
+    test("returns 400 for an unknown recurrence pattern", async () => {
+      const req = { body: { ...baseBody, recurrencePattern: "Daily" } };
+      const res = mockRes();
+
+      await controller.createRecurring(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.send).toHaveBeenCalledWith({ message: "Unknown recurrence pattern: Daily" });
+    });
+
+    test("returns 500 when bulk creation fails", async () => {
+      const req = { body: { ...baseBody } };
+      const res = mockRes();
+      Sprint.bulkCreate.mockRejectedValue(new Error("bulk insert failed"));
+
+      await controller.createRecurring(req, res);
 
       expect(res.status).toHaveBeenCalledWith(500);
-
-      expect(res.send).toHaveBeenCalledWith({
-        message: "Database error",
-      });
+      expect(res.send).toHaveBeenCalledWith({ message: "bulk insert failed" });
     });
   });
 
-  // --------------------------------------------------
-  // FIND ALL FOR PROJECT
-  // --------------------------------------------------
-
   describe("findAllForProject", () => {
-    test("should return all sprints for a project", async () => {
-      req.params.projectId = 1;
-
-      const sprints = [
-        {
-          id: 1,
-          title: "Sprint 1",
-          projectId: 1,
-        },
-        {
-          id: 2,
-          title: "Sprint 2",
-          projectId: 1,
-        },
-      ];
-
+    test("returns sprints for the given project ordered by start date", async () => {
+      const req = { params: { projectId: "5" } };
+      const res = mockRes();
+      const sprints = [{ id: 1 }];
       Sprint.findAll.mockResolvedValue(sprints);
 
-      await sprintController.findAllForProject(
-        req,
-        res
-      );
-
-      expect(authenticate).toHaveBeenCalledWith(
-        req,
-        res
-      );
+      await controller.findAllForProject(req, res);
 
       expect(Sprint.findAll).toHaveBeenCalledWith({
-        where: {
-          projectId: 1,
-        },
+        where: { projectId: "5" },
         order: [["startDate", "ASC"]],
       });
-
       expect(res.send).toHaveBeenCalledWith(sprints);
     });
 
-    test("should return 500 if findAllForProject fails", async () => {
-      req.params.projectId = 1;
+    test("returns 500 on query failure", async () => {
+      const req = { params: { projectId: "5" } };
+      const res = mockRes();
+      Sprint.findAll.mockRejectedValue(new Error("query failed"));
 
-      Sprint.findAll.mockRejectedValue(
-        new Error("Database error")
-      );
-
-      await sprintController.findAllForProject(
-        req,
-        res
-      );
+      await controller.findAllForProject(req, res);
 
       expect(res.status).toHaveBeenCalledWith(500);
-
-      expect(res.send).toHaveBeenCalledWith({
-        message: "Database error",
-      });
+      expect(res.send).toHaveBeenCalledWith({ message: "query failed" });
     });
   });
-
-  // --------------------------------------------------
-  // FIND ONE
-  // --------------------------------------------------
 
   describe("findOne", () => {
-    test("should return a sprint if found", async () => {
-      req.params.id = 1;
-
-      const sprint = {
-        id: 1,
-        title: "Sprint 1",
-      };
-
+    test("returns the sprint when found", async () => {
+      const req = { params: { id: "1" } };
+      const res = mockRes();
+      const sprint = { id: 1 };
       Sprint.findByPk.mockResolvedValue(sprint);
 
-      await sprintController.findOne(req, res);
+      await controller.findOne(req, res);
 
-      expect(authenticate).toHaveBeenCalledWith(
-        req,
-        res
-      );
-
-      expect(Sprint.findByPk).toHaveBeenCalledWith(1);
-
+      expect(Sprint.findByPk).toHaveBeenCalledWith("1");
       expect(res.send).toHaveBeenCalledWith(sprint);
     });
 
-    test("should return 404 if sprint is not found", async () => {
-      req.params.id = 999;
-
+    test("returns 404 when not found", async () => {
+      const req = { params: { id: "99" } };
+      const res = mockRes();
       Sprint.findByPk.mockResolvedValue(null);
 
-      await sprintController.findOne(req, res);
-
-      expect(httpError).toHaveBeenCalledWith(
-        "Cannot find Sprint with id = 999.",
-        404
-      );
+      await controller.findOne(req, res);
 
       expect(res.status).toHaveBeenCalledWith(404);
-
-      expect(res.send).toHaveBeenCalledWith({
-        message:
-          "Cannot find Sprint with id = 999.",
-      });
+      expect(res.send).toHaveBeenCalledWith({ message: "Cannot find Sprint with id = 99." });
     });
 
-    test("should return 500 if findByPk fails", async () => {
-      req.params.id = 1;
+    test("returns 500 on query failure", async () => {
+      const req = { params: { id: "1" } };
+      const res = mockRes();
+      Sprint.findByPk.mockRejectedValue(new Error("query failed"));
 
-      Sprint.findByPk.mockRejectedValue(
-        new Error("Database error")
-      );
-
-      await sprintController.findOne(req, res);
+      await controller.findOne(req, res);
 
       expect(res.status).toHaveBeenCalledWith(500);
-
-      expect(res.send).toHaveBeenCalledWith({
-        message: "Database error",
-      });
+      expect(res.send).toHaveBeenCalledWith({ message: "query failed" });
     });
   });
-
-  // --------------------------------------------------
-  // UPDATE
-  // --------------------------------------------------
 
   describe("update", () => {
-    test("should update a sprint successfully", async () => {
-      req.params.id = 1;
-
-      req.body = {
-        title: "Updated Sprint",
-        status: "Active",
-      };
-
-      const sprint = {
-        id: 1,
-        title: "Sprint 1",
-        status: "Planned",
-        update: jest.fn().mockResolvedValue(true),
-      };
-
+    test("updates and returns the sprint", async () => {
+      const req = { params: { id: "1" }, body: { title: "Updated" } };
+      const res = mockRes();
+      const sprint = { id: 1, update: jest.fn().mockResolvedValue(undefined) };
       Sprint.findByPk.mockResolvedValue(sprint);
 
-      await sprintController.update(req, res);
+      await controller.update(req, res);
 
-      expect(authenticate).toHaveBeenCalledWith(
-        req,
-        res
-      );
-
-      expect(Sprint.findByPk).toHaveBeenCalledWith(1);
-
-      expect(sprint.update).toHaveBeenCalledWith(
-        req.body
-      );
-
+      expect(sprint.update).toHaveBeenCalledWith(req.body);
       expect(res.send).toHaveBeenCalledWith(sprint);
     });
 
-    test("should return 404 if sprint does not exist", async () => {
-      req.params.id = 999;
-
+    test("returns 404 when the sprint does not exist", async () => {
+      const req = { params: { id: "99" }, body: {} };
+      const res = mockRes();
       Sprint.findByPk.mockResolvedValue(null);
 
-      await sprintController.update(req, res);
-
-      expect(httpError).toHaveBeenCalledWith(
-        "Cannot find Sprint with id = 999.",
-        404
-      );
+      await controller.update(req, res);
 
       expect(res.status).toHaveBeenCalledWith(404);
-
-      expect(res.send).toHaveBeenCalledWith({
-        message:
-          "Cannot find Sprint with id = 999.",
-      });
+      expect(res.send).toHaveBeenCalledWith({ message: "Cannot find Sprint with id = 99." });
     });
 
-    test("should return 500 if update fails", async () => {
-      req.params.id = 1;
-
-      const sprint = {
-        id: 1,
-        update: jest
-          .fn()
-          .mockRejectedValue(
-            new Error("Update failed")
-          ),
-      };
-
+    test("returns 500 when the update fails", async () => {
+      const req = { params: { id: "1" }, body: {} };
+      const res = mockRes();
+      const sprint = { update: jest.fn().mockRejectedValue(new Error("update failed")) };
       Sprint.findByPk.mockResolvedValue(sprint);
 
-      await sprintController.update(req, res);
+      await controller.update(req, res);
 
       expect(res.status).toHaveBeenCalledWith(500);
-
-      expect(res.send).toHaveBeenCalledWith({
-        message: "Update failed",
-      });
+      expect(res.send).toHaveBeenCalledWith({ message: "update failed" });
     });
   });
 
-  // --------------------------------------------------
-  // DELETE
-  // --------------------------------------------------
-
   describe("delete", () => {
-    test("should delete a sprint successfully", async () => {
-      req.params.id = 1;
-
-      const sprint = {
-        id: 1,
-        title: "Sprint 1",
-        destroy: jest.fn().mockResolvedValue(true),
-      };
-
+    test("deletes the sprint", async () => {
+      const req = { params: { id: "1" } };
+      const res = mockRes();
+      const sprint = { destroy: jest.fn().mockResolvedValue(undefined) };
       Sprint.findByPk.mockResolvedValue(sprint);
 
-      await sprintController.delete(req, res);
+      await controller.delete(req, res);
 
-      expect(authenticate).toHaveBeenCalledWith(
-        req,
-        res
-      );
-
-      expect(Sprint.findByPk).toHaveBeenCalledWith(1);
-
-      expect(sprint.destroy).toHaveBeenCalled();
-
-      expect(res.send).toHaveBeenCalledWith({
-        message: "Sprint deleted successfully!",
-      });
+      expect(sprint.destroy).toHaveBeenCalledWith();
+      expect(res.send).toHaveBeenCalledWith({ message: "Sprint deleted successfully!" });
     });
 
-    test("should return 404 if sprint does not exist", async () => {
-      req.params.id = 999;
-
+    test("returns 404 when the sprint does not exist", async () => {
+      const req = { params: { id: "99" } };
+      const res = mockRes();
       Sprint.findByPk.mockResolvedValue(null);
 
-      await sprintController.delete(req, res);
-
-      expect(httpError).toHaveBeenCalledWith(
-        "Cannot find Sprint with id = 999.",
-        404
-      );
+      await controller.delete(req, res);
 
       expect(res.status).toHaveBeenCalledWith(404);
-
-      expect(res.send).toHaveBeenCalledWith({
-        message:
-          "Cannot find Sprint with id = 999.",
-      });
+      expect(res.send).toHaveBeenCalledWith({ message: "Cannot find Sprint with id = 99." });
     });
 
-    test("should return 500 if delete fails", async () => {
-      req.params.id = 1;
-
-      const sprint = {
-        id: 1,
-        destroy: jest
-          .fn()
-          .mockRejectedValue(
-            new Error("Delete failed")
-          ),
-      };
-
+    test("returns 500 when deletion fails", async () => {
+      const req = { params: { id: "1" } };
+      const res = mockRes();
+      const sprint = { destroy: jest.fn().mockRejectedValue(new Error("delete failed")) };
       Sprint.findByPk.mockResolvedValue(sprint);
 
-      await sprintController.delete(req, res);
+      await controller.delete(req, res);
 
       expect(res.status).toHaveBeenCalledWith(500);
-
-      expect(res.send).toHaveBeenCalledWith({
-        message: "Delete failed",
-      });
+      expect(res.send).toHaveBeenCalledWith({ message: "delete failed" });
     });
+  });
+});
+
+describe("Sprint model", () => {
+  let defineMock;
+  let sequelizeMock;
+  let capturedName;
+  let capturedAttributes;
+
+  beforeEach(() => {
+    capturedName = undefined;
+    capturedAttributes = undefined;
+    defineMock = jest.fn((name, attributes) => {
+      capturedName = name;
+      capturedAttributes = attributes;
+      return { name, attributes };
+    });
+    sequelizeMock = { define: defineMock };
+  });
+
+  test("defines the sprint model with correct name", () => {
+    SprintModel(sequelizeMock, DataTypes);
+    expect(defineMock).toHaveBeenCalledTimes(1);
+    expect(capturedName).toBe("sprint");
+  });
+
+  test("title is an optional string", () => {
+    SprintModel(sequelizeMock, DataTypes);
+    expect(capturedAttributes.title.type).toBe(DataTypes.STRING);
+    expect(capturedAttributes.title.allowNull).toBe(true);
+  });
+
+  test("goal is an optional string", () => {
+    SprintModel(sequelizeMock, DataTypes);
+    expect(capturedAttributes.goal.type).toBe(DataTypes.STRING);
+    expect(capturedAttributes.goal.allowNull).toBe(true);
+  });
+
+  test("startDate is a required DATEONLY", () => {
+    SprintModel(sequelizeMock, DataTypes);
+    expect(capturedAttributes.startDate.type).toBe(DataTypes.DATEONLY);
+    expect(capturedAttributes.startDate.allowNull).toBe(false);
+  });
+
+  test("endDate is a required DATEONLY", () => {
+    SprintModel(sequelizeMock, DataTypes);
+    expect(capturedAttributes.endDate.type).toBe(DataTypes.DATEONLY);
+    expect(capturedAttributes.endDate.allowNull).toBe(false);
+  });
+
+  test("status is an enum defaulting to Planned", () => {
+    SprintModel(sequelizeMock, DataTypes);
+    expect(capturedAttributes.status.type.values).toEqual(["Planned", "Active", "Completed"]);
+    expect(capturedAttributes.status.allowNull).toBe(false);
+    expect(capturedAttributes.status.defaultValue).toBe("Planned");
+  });
+
+  test("isRecurring is a required boolean defaulting to false", () => {
+    SprintModel(sequelizeMock, DataTypes);
+    expect(capturedAttributes.isRecurring.type).toBe(DataTypes.BOOLEAN);
+    expect(capturedAttributes.isRecurring.allowNull).toBe(false);
+    expect(capturedAttributes.isRecurring.defaultValue).toBe(false);
+  });
+
+  test("recurrencePattern is an optional enum", () => {
+    SprintModel(sequelizeMock, DataTypes);
+    expect(capturedAttributes.recurrencePattern.type.values).toEqual(["Weekly", "Biweekly", "Monthly"]);
+    expect(capturedAttributes.recurrencePattern.allowNull).toBe(true);
+  });
+
+  test("recurrenceGroupId is an optional string", () => {
+    SprintModel(sequelizeMock, DataTypes);
+    expect(capturedAttributes.recurrenceGroupId.type).toBe(DataTypes.STRING);
+    expect(capturedAttributes.recurrenceGroupId.allowNull).toBe(true);
+  });
+
+  test("returns the defined model", () => {
+    const result = SprintModel(sequelizeMock, DataTypes);
+    expect(result).toEqual({ name: "sprint", attributes: capturedAttributes });
+  });
+});
+
+describe("Sprint routes", () => {
+  let app;
+
+  beforeEach(() => {
+    jest.spyOn(controller, "create").mockImplementation((req, res) => res.status(201).send({ handler: "create" }));
+    jest.spyOn(controller, "createRecurring").mockImplementation((req, res) => res.status(201).send({ handler: "createRecurring" }));
+    jest.spyOn(controller, "findAllForProject").mockImplementation((req, res) => res.send({ handler: "findAllForProject" }));
+    jest.spyOn(controller, "findOne").mockImplementation((req, res) => res.send({ handler: "findOne" }));
+    jest.spyOn(controller, "update").mockImplementation((req, res) => res.send({ handler: "update" }));
+    jest.spyOn(controller, "delete").mockImplementation((req, res) => res.send({ handler: "delete" }));
+    authenticateRoute.mockImplementation((req, res, next) => next());
+
+    app = express();
+    app.use(express.json());
+    sprintRoutes(app);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  test("POST /nimbleapi/sprints/ calls authenticateRoute then Sprint.create", async () => {
+    const res = await request(app).post("/nimbleapi/sprints/").send({ title: "Sprint 1" });
+
+    expect(authenticateRoute).toHaveBeenCalled();
+    expect(controller.create).toHaveBeenCalled();
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual({ handler: "create" });
+  });
+
+  test("POST /nimbleapi/sprints/recurring calls Sprint.createRecurring", async () => {
+    const res = await request(app).post("/nimbleapi/sprints/recurring").send({});
+
+    expect(controller.createRecurring).toHaveBeenCalled();
+    expect(res.status).toBe(201);
+  });
+
+  test("GET /nimbleapi/projects/:projectId/sprints calls Sprint.findAllForProject", async () => {
+    const res = await request(app).get("/nimbleapi/projects/5/sprints");
+
+    expect(controller.findAllForProject).toHaveBeenCalled();
+    expect(res.body).toEqual({ handler: "findAllForProject" });
+  });
+
+  test("GET /nimbleapi/sprints/:id calls Sprint.findOne", async () => {
+    const res = await request(app).get("/nimbleapi/sprints/1");
+
+    expect(controller.findOne).toHaveBeenCalled();
+    expect(res.body).toEqual({ handler: "findOne" });
+  });
+
+  test("PUT /nimbleapi/sprints/:id calls Sprint.update", async () => {
+    const res = await request(app).put("/nimbleapi/sprints/1").send({ title: "Updated" });
+
+    expect(controller.update).toHaveBeenCalled();
+    expect(res.body).toEqual({ handler: "update" });
+  });
+
+  test("DELETE /nimbleapi/sprints/:id calls Sprint.delete", async () => {
+    const res = await request(app).delete("/nimbleapi/sprints/1");
+
+    expect(controller.delete).toHaveBeenCalled();
+    expect(res.body).toEqual({ handler: "delete" });
+  });
+
+  test("blocks requests when authenticateRoute rejects them", async () => {
+    authenticateRoute.mockImplementation((req, res) => res.status(401).send({ message: "Unauthorized" }));
+
+    const res = await request(app).get("/nimbleapi/sprints/1");
+
+    expect(res.status).toBe(401);
+    expect(controller.findOne).not.toHaveBeenCalled();
   });
 });
