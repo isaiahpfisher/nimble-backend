@@ -276,7 +276,12 @@ describe("update", () => {
       email: "n@e.com",
       isAdmin: true,
     });
-    expect(res.send).toHaveBeenCalledWith(user);
+    expect(res.send).toHaveBeenCalledWith({
+      firstName: "New",
+      lastName: "Name",
+      email: "n@e.com",
+      isAdmin: true,
+    });
     expect(res.status).not.toHaveBeenCalled();
   });
 
