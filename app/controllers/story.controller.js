@@ -166,18 +166,22 @@ exports.create = async (req, res) => {
       { label: "Story", value: data.title, url: storyUrl(data) },
     ];
 
-    if (data.assigneeId && data.assigneeId !== userId) {
-      const assignee = await User.findByPk(data.assigneeId);
-      if (assignee) {
-        await notifyAssignedUser(assignee, activeUser, data, context);
+    try {
+      if (data.assigneeId && data.assigneeId !== userId) {
+        const assignee = await User.findByPk(data.assigneeId);
+        if (assignee) {
+          await notifyAssignedUser(assignee, activeUser, data, context);
+        }
       }
-    }
 
-    if (data.reviewerId && data.reviewerId !== userId) {
-      const reviewer = await User.findByPk(data.reviewerId);
-      if (reviewer) {
-        await notifyReviewerUser(reviewer, activeUser, data, context);
+      if (data.reviewerId && data.reviewerId !== userId) {
+        const reviewer = await User.findByPk(data.reviewerId);
+        if (reviewer) {
+          await notifyReviewerUser(reviewer, activeUser, data, context);
+        }
       }
+    } catch (emailError) {
+      console.error("Failed to send story notification email:", emailError);
     }
 
     res.send(data);
@@ -209,26 +213,30 @@ exports.update = async (req, res) => {
       { label: "Story", value: story.title, url: storyUrl(story) },
     ];
 
-    if (
-      req.body.assigneeId &&
-      req.body.assigneeId != story.assigneeId &&
-      req.body.assigneeId != userId
-    ) {
-      const assignee = await User.findByPk(req.body.assigneeId);
-      if (assignee) {
-        await notifyAssignedUser(assignee, activeUser, story, context);
+    try {
+      if (
+        req.body.assigneeId &&
+        req.body.assigneeId != story.assigneeId &&
+        req.body.assigneeId != userId
+      ) {
+        const assignee = await User.findByPk(req.body.assigneeId);
+        if (assignee) {
+          await notifyAssignedUser(assignee, activeUser, story, context);
+        }
       }
-    }
 
-    if (
-      req.body.reviewerId &&
-      req.body.reviewerId != story.reviewerId &&
-      req.body.reviewerId != userId
-    ) {
-      const reviewer = await User.findByPk(req.body.reviewerId);
-      if (reviewer) {
-        await notifyReviewerUser(reviewer, activeUser, story, context);
+      if (
+        req.body.reviewerId &&
+        req.body.reviewerId != story.reviewerId &&
+        req.body.reviewerId != userId
+      ) {
+        const reviewer = await User.findByPk(req.body.reviewerId);
+        if (reviewer) {
+          await notifyReviewerUser(reviewer, activeUser, story, context);
+        }
       }
+    } catch (emailError) {
+      console.error("Failed to send story notification email:", emailError);
     }
 
     await story.update({

@@ -179,7 +179,7 @@ const run = async () => {
 
     // --- Story states (type enum: unstarted | started | finished) ---
     const stateBacklog = await db.storyState.create({
-      name: "Backlog",
+      name: "Not Started",
       type: "unstarted",
       order: 1,
       projectId: project.id,
@@ -734,7 +734,7 @@ const run = async () => {
     });
 
     const p3StateBacklog = await db.storyState.create({
-      name: "Backlog",
+      name: "Not Started",
       type: "unstarted",
       order: 1,
       projectId: project3.id,
@@ -795,12 +795,7 @@ const run = async () => {
         stateReview.id,
         stateDone.id,
       ],
-      storyTypeIds: [
-        typeFeature.id,
-        typeBug.id,
-        typeChore.id,
-        typeSpike.id,
-      ],
+      storyTypeIds: [typeFeature.id, typeBug.id, typeChore.id, typeSpike.id],
       sprintIds: [sprint0.id, sprint.id, sprint2.id],
       storyIds: [
         storyLogin.id,

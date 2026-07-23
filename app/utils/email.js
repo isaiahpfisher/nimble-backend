@@ -48,7 +48,7 @@ async function sendEmail(to, subject, text, options = {}) {
     </div>`;
 
   const { data, error } = await resend.emails.send({
-    from: "Nimble <onboarding@resend.dev>",
+    from: "Nimble <hello@nimble.isaiahpfisher.com>",
     to: [to],
     subject: subject,
     html,

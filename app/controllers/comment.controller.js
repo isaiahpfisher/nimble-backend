@@ -106,17 +106,21 @@ exports.createForStory = async (req, res) => {
       },
     });
 
-    const mentionedUsers = (await getMentionedUsers(data.content)).filter(
-      (u) => u.id !== userId,
-    );
-    await Promise.all(
-      mentionedUsers.map(
-        async (mentionedUser) =>
-          await notifyMentionedUser(mentionedUser, user, data, [
-            { label: "Story", value: story.title, url: storyUrl(story) },
-          ]),
-      ),
-    );
+    try {
+      const mentionedUsers = (await getMentionedUsers(data.content)).filter(
+        (u) => u.id !== userId,
+      );
+      await Promise.all(
+        mentionedUsers.map(
+          async (mentionedUser) =>
+            await notifyMentionedUser(mentionedUser, user, data, [
+              { label: "Story", value: story.title, url: storyUrl(story) },
+            ]),
+        ),
+      );
+    } catch (emailError) {
+      console.error("Failed to send comment notification email:", emailError);
+    }
 
     res.send(data);
   } catch (err) {
@@ -169,26 +173,30 @@ exports.createForCriterion = async (req, res) => {
       },
     });
 
-    const mentionedUsers = (await getMentionedUsers(data.content)).filter(
-      (u) => u.id !== userId,
-    );
-    await Promise.all(
-      mentionedUsers.map(
-        async (mentionedUser) =>
-          await notifyMentionedUser(mentionedUser, user, data, [
-            {
-              label: "Story",
-              value: parentStory.title,
-              url: storyUrl(parentStory),
-            },
-            {
-              label: "Acceptance Criteria",
-              value: criterion.title,
-              url: storyUrl(parentStory, { acId: criterion.id }),
-            },
-          ]),
-      ),
-    );
+    try {
+      const mentionedUsers = (await getMentionedUsers(data.content)).filter(
+        (u) => u.id !== userId,
+      );
+      await Promise.all(
+        mentionedUsers.map(
+          async (mentionedUser) =>
+            await notifyMentionedUser(mentionedUser, user, data, [
+              {
+                label: "Story",
+                value: parentStory.title,
+                url: storyUrl(parentStory),
+              },
+              {
+                label: "Acceptance Criteria",
+                value: criterion.title,
+                url: storyUrl(parentStory, { acId: criterion.id }),
+              },
+            ]),
+        ),
+      );
+    } catch (emailError) {
+      console.error("Failed to send comment notification email:", emailError);
+    }
 
     res.send(data);
   } catch (err) {
