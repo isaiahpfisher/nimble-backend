@@ -38,11 +38,19 @@ const run = async () => {
     if (wipe) {
       // Disable FK checks so force:true can drop tables regardless of the
       // referential order (users is referenced by stories, sessions, etc.).
-      await db.sequelize.query("SET FOREIGN_KEY_CHECKS = 0");
+      //
+      // FOREIGN_KEY_CHECKS is a per-connection setting, and Sequelize runs on a
+      // connection pool — a single SET only affects one pooled connection, but
+      // force:true may issue its DROP TABLEs on others. Use an afterConnect hook
+      // so every connection the pool opens during sync has checks disabled.
+      const disableFkChecks = async (connection) => {
+        await connection.promise().query("SET FOREIGN_KEY_CHECKS = 0");
+      };
+      db.sequelize.addHook("afterConnect", "disableFkChecks", disableFkChecks);
       try {
         await db.sequelize.sync({ force: true });
       } finally {
-        await db.sequelize.query("SET FOREIGN_KEY_CHECKS = 1");
+        db.sequelize.removeHook("afterConnect", "disableFkChecks");
       }
     } else {
       await db.sequelize.sync();
@@ -177,34 +185,29 @@ const run = async () => {
       projectId: project.id,
     });
 
-    // --- Story states (type enum: unstarted | started | finished) ---
+    // --- Story states ---
     const stateBacklog = await db.storyState.create({
       name: "Not Started",
-      type: "unstarted",
       order: 1,
       projectId: project.id,
     });
     const stateReady = await db.storyState.create({
       name: "Ready",
-      type: "unstarted",
       order: 2,
       projectId: project.id,
     });
     const stateInProgress = await db.storyState.create({
       name: "In Progress",
-      type: "started",
       order: 3,
       projectId: project.id,
     });
     const stateReview = await db.storyState.create({
       name: "In Review",
-      type: "started",
       order: 4,
       projectId: project.id,
     });
     const stateDone = await db.storyState.create({
       name: "Done",
-      type: "finished",
       order: 5,
       projectId: project.id,
     });
@@ -229,21 +232,24 @@ const run = async () => {
 
     // --- Sprints ---
     const sprint0 = await db.sprint.create({
-      name: "Sprint 0 (completed)",
-      start: days(-28),
-      end: days(-14),
+      title: "Sprint 0 (completed)",
+      startDate: days(-28),
+      endDate: days(-14),
+      status: "Completed",
       projectId: project.id,
     });
     const sprint = await db.sprint.create({
-      name: "Sprint 1",
-      start: days(-1),
-      end: days(13),
+      title: "Sprint 1",
+      startDate: days(-1),
+      endDate: days(13),
+      status: "Active",
       projectId: project.id,
     });
     const sprint2 = await db.sprint.create({
-      name: "Sprint 2 (planned)",
-      start: days(14),
-      end: days(28),
+      title: "Sprint 2 (planned)",
+      startDate: days(14),
+      endDate: days(28),
+      status: "Planned",
       projectId: project.id,
     });
 
@@ -568,28 +574,24 @@ const run = async () => {
     // Activities (changes stored as JSON)
     // -------------------------------------------------------------------------
     const activityCreated = await db.activity.create({
-      entityType: "story",
       action: "created",
       changes: { title: "Implement user login" },
       userId: user.id,
       storyId: storyLogin.id,
     });
     const activityMoved = await db.activity.create({
-      entityType: "story",
       action: "updated",
       changes: { stateId: [stateBacklog.id, stateInProgress.id] },
       userId: bob.id,
       storyId: storyLogin.id,
     });
     const activityAssigned = await db.activity.create({
-      entityType: "story",
       action: "updated",
       changes: { assigneeId: [null, dave.id] },
       userId: frank.id,
       storyId: storyBoard.id,
     });
     const activityDone = await db.activity.create({
-      entityType: "story",
       action: "updated",
       changes: { stateId: [stateReview.id, stateDone.id] },
       userId: user.id,
@@ -627,19 +629,16 @@ const run = async () => {
 
     const p2StateTodo = await db.storyState.create({
       name: "To Do",
-      type: "unstarted",
       order: 1,
       projectId: project2.id,
     });
     const p2StateDoing = await db.storyState.create({
       name: "Doing",
-      type: "started",
       order: 2,
       projectId: project2.id,
     });
     const p2StateDone = await db.storyState.create({
       name: "Done",
-      type: "finished",
       order: 3,
       projectId: project2.id,
     });
@@ -652,9 +651,10 @@ const run = async () => {
       projectId: project2.id,
     });
     const p2Sprint = await db.sprint.create({
-      name: "Atlas Sprint 1",
-      start: days(0),
-      end: days(14),
+      title: "Atlas Sprint 1",
+      startDate: days(0),
+      endDate: days(14),
+      status: "Active",
       projectId: project2.id,
     });
 
@@ -735,13 +735,11 @@ const run = async () => {
 
     const p3StateBacklog = await db.storyState.create({
       name: "Not Started",
-      type: "unstarted",
       order: 1,
       projectId: project3.id,
     });
     const p3StateDone = await db.storyState.create({
       name: "Shipped",
-      type: "finished",
       order: 2,
       projectId: project3.id,
     });
@@ -775,160 +773,6 @@ const run = async () => {
       userId: grace.id,
     });
 
-    console.log("Nimble seed data created:", {
-      userIds: [
-        user.id,
-        bob.id,
-        carol.id,
-        dave.id,
-        erin.id,
-        frank.id,
-        grace.id,
-        isaiah.id,
-      ],
-      projectIds: [project.id, project2.id, project3.id],
-      repositoryIds: [repository.id, repositoryFrontend.id],
-      storyStateIds: [
-        stateBacklog.id,
-        stateReady.id,
-        stateInProgress.id,
-        stateReview.id,
-        stateDone.id,
-      ],
-      storyTypeIds: [typeFeature.id, typeBug.id, typeChore.id, typeSpike.id],
-      sprintIds: [sprint0.id, sprint.id, sprint2.id],
-      storyIds: [
-        storyLogin.id,
-        storyBug.id,
-        storyChore.id,
-        storyDone.id,
-        storyPassword.id,
-        storyBoard.id,
-        storyNotifications.id,
-        storySpike.id,
-        storyDarkMode.id,
-      ],
-      relationIds: [
-        relationBlocks.id,
-        relationRelates.id,
-        relationParent.id,
-        relationDuplicates.id,
-      ],
-      acceptanceCriteriaIds: [
-        acLoginSuccess.id,
-        acLoginFailure.id,
-        acLoginLockout.id,
-        acBugFixed.id,
-        acPasswordEmail.id,
-        acPasswordExpiry.id,
-        acBoardDrag.id,
-        acBoardOrder.id,
-        acModelsMigrate.id,
-      ],
-      storyCommentIds: [
-        commentBob.id,
-        commentOwner.id,
-        commentCarol.id,
-        commentDave.id,
-        commentErin.id,
-        commentFrank.id,
-      ],
-      acceptanceCriteriaCommentIds: [
-        acCommentGrace.id,
-        acCommentCarol.id,
-        acCommentBob.id,
-        acCommentGrace2.id,
-        acCommentErin.id,
-        acCommentDave.id,
-        acCommentUser.id,
-      ],
-      activityIds: [
-        activityCreated.id,
-        activityMoved.id,
-        activityAssigned.id,
-        activityDone.id,
-      ],
-    });
-
-    // READ: project with its stories
-    const foundProject = await db.project.findByPk(project.id, {
-      include: [{ model: db.story, as: "story" }],
-    });
-    console.log("Found project with stories:", {
-      id: foundProject.id,
-      title: foundProject.title,
-      storyCount: foundProject.story.length,
-    });
-
-    // READ: story with its state, type, and people
-    const foundStory = await db.story.findByPk(storyLogin.id, {
-      include: [
-        { model: db.storyState, as: "state" },
-        { model: db.storyType, as: "type" },
-        { model: db.user, as: "reporter" },
-        { model: db.user, as: "assignee" },
-        { model: db.user, as: "reviewer" },
-        { model: db.acceptanceCriteria, as: "acceptanceCriteria" },
-        { model: db.comment, as: "comment" },
-      ],
-    });
-    console.log("Found story with associations:", {
-      id: foundStory.id,
-      title: foundStory.title,
-      state: foundStory.state.name,
-      type: foundStory.type.name,
-      reporter: foundStory.reporter ? foundStory.reporter.email : null,
-      assignee: foundStory.assignee ? foundStory.assignee.email : null,
-      reviewer: foundStory.reviewer ? foundStory.reviewer.email : null,
-      acceptanceCriteriaCount: foundStory.acceptanceCriteria.length,
-      commentCount: foundStory.comment.length,
-    });
-
-    // READ: acceptance criterion with its comments
-    const foundAc = await db.acceptanceCriteria.findByPk(acLoginFailure.id, {
-      include: [{ model: db.comment, as: "comment" }],
-    });
-    console.log("Found acceptance criterion with comments:", {
-      id: foundAc.id,
-      title: foundAc.title,
-      status: foundAc.status,
-      commentCount: foundAc.comment.length,
-    });
-
-    // READ: sprint with its retrospective and standups
-    const foundSprint = await db.sprint.findByPk(sprint.id, {
-      include: [
-        { model: db.retrospective, as: "retrospective" },
-        { model: db.standup, as: "standup" },
-      ],
-    });
-    console.log("Found sprint with retrospective and standups:", {
-      id: foundSprint.id,
-      name: foundSprint.name,
-      hasRetrospective: !!foundSprint.retrospective,
-      standupCount: foundSprint.standup.length,
-    });
-
-    // UPDATE: move a story to a new state
-    await db.story.update(
-      { stateId: stateDone.id },
-      { where: { id: storyChore.id } },
-    );
-    const updatedStory = await db.story.findByPk(storyChore.id);
-    console.log("Updated story stateId:", {
-      id: updatedStory.id,
-      stateId: updatedStory.stateId,
-      matchesDone: updatedStory.stateId === stateDone.id,
-    });
-
-    // DELETE: remove an acceptance criterion (cascades to its comments)
-    await db.acceptanceCriteria.destroy({ where: { id: acBugFixed.id } });
-    const deletedAc = await db.acceptanceCriteria.findByPk(acBugFixed.id);
-    console.log("Deleted acceptance criterion exists?", !!deletedAc);
-
-    console.log("Nimble domain: init + CRUD verification complete.");
-
-    console.log("Init + CRUD verification complete.");
     process.exit(0);
   } catch (error) {
     console.error("Init/verify failed:", error);

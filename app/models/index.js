@@ -196,24 +196,24 @@ db.story.belongsTo(db.repository, {
 db.sprint.hasMany(db.story, {
   as: "story",
   foreignKey: { name: "sprintId", allowNull: true },
-  onDelete: "CASCADE",
+  onDelete: "SET NULL",
 });
 db.story.belongsTo(db.sprint, {
   as: "sprint",
   foreignKey: { name: "sprintId", allowNull: true },
-  onDelete: "CASCADE",
+  onDelete: "SET NULL",
 });
 
 // story <-> storyState
 db.storyState.hasMany(db.story, {
   as: "story",
   foreignKey: { name: "stateId", allowNull: false },
-  onDelete: "CASCADE",
+  onDelete: "RESTRICT",
 });
 db.story.belongsTo(db.storyState, {
   as: "state",
   foreignKey: { name: "stateId", allowNull: false },
-  onDelete: "CASCADE",
+  onDelete: "RESTRICT",
 });
 
 // story <-> storyType
