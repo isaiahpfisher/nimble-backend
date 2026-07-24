@@ -6,5 +6,17 @@ module.exports = (app) => {
   // Retrieve all Relation
   router.get("/relations/", Relation.findAll);
 
+  router.post(
+    "/projects/:projectId/stories/:storyId/relations",
+    authenticateRoute,
+    Relation.create,
+  );
+
+  router.delete(
+    "/projects/:projectId/stories/:storyId/relations/:relationId",
+    authenticateRoute,
+    Relation.delete,
+  );
+
   app.use("/nimbleapi", router);
 };

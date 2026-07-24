@@ -32,6 +32,8 @@ services:
       DB_SSL: "false"
       SECRET_KEY: xT1tdO3CfMH01pjxC+guN1LWSt2nKvr5td6KUpw7Czg=
       CORS_ORIGIN: http://localhost:8081
+      RESEND_API_KEY: ${RESEND_API_KEY}
+      BASE_FRONTEND_URL: http://localhost:8081/nimble-frontend
     ports:
       - "3200:3200"
     depends_on:

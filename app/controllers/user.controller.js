@@ -165,9 +165,10 @@ exports.update = async (req, res) => {
     }
 
     const { firstName, lastName, email, isAdmin } = req.body;
-    await user.update({ firstName, lastName, email, isAdmin });
+    const updatedUser = { firstName, lastName, email, isAdmin };
+    await user.update(updatedUser);
 
-    res.send(user);
+    res.send(updatedUser);
   } catch (err) {
     res.status(err.statusCode || 500).send({
       message: err.message || "Error updating user.",

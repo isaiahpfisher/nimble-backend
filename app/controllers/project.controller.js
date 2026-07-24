@@ -52,16 +52,22 @@ exports.findOne = async (req, res) => {
   try {
     const id = req.params.id;
     const data = await Project.findByPk(id, {
-      include: {
-        model: db.projectMember,
-        as: "projectMembers",
-        include: {
-          model: db.user,
-          as: "user",
-          required: false,
-          attributes: ["id", "firstName", "lastName", "email"],
+      include: [
+        { model: db.storyType, as: "storyType" },
+        { model: db.storyState, as: "storyState" },
+        { model: db.sprint, as: "sprint" },
+        { model: db.repository, as: "repository" },
+        {
+          model: db.projectMember,
+          as: "projectMembers",
+          include: {
+            model: db.user,
+            as: "user",
+            required: false,
+            attributes: ["id", "firstName", "lastName", "email"],
+          },
         },
-      },
+      ],
     });
 
     if (data) {

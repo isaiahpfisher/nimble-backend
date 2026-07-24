@@ -4,6 +4,7 @@ const sequelize = new Sequelize(dbConfig.DB, dbConfig.USER, dbConfig.PASSWORD, {
   host: dbConfig.HOST,
   port: dbConfig.PORT,
   dialect: dbConfig.dialect,
+  logging: false,
   dialectOptions: dbConfig.ssl
     ? { ssl: { require: true, rejectUnauthorized: false } }
     : {},
@@ -172,12 +173,12 @@ db.story.belongsTo(db.repository, {
 // story <-> sprint
 db.sprint.hasMany(db.story, {
   as: "story",
-  foreignKey: { name: "sprintId", allowNull: false },
+  foreignKey: { name: "sprintId", allowNull: true },
   onDelete: "CASCADE",
 });
 db.story.belongsTo(db.sprint, {
   as: "sprint",
-  foreignKey: { name: "sprintId", allowNull: false },
+  foreignKey: { name: "sprintId", allowNull: true },
   onDelete: "CASCADE",
 });
 
@@ -196,13 +197,13 @@ db.story.belongsTo(db.storyState, {
 // story <-> storyType
 db.storyType.hasMany(db.story, {
   as: "story",
-  foreignKey: { name: "typeId", allowNull: false },
-  onDelete: "CASCADE",
+  foreignKey: { name: "typeId", allowNull: true },
+  onDelete: "SET NULL",
 });
 db.story.belongsTo(db.storyType, {
   as: "type",
-  foreignKey: { name: "typeId", allowNull: false },
-  onDelete: "CASCADE",
+  foreignKey: { name: "typeId", allowNull: true },
+  onDelete: "SET NULL",
 });
 
 // story <-> user (reporter, assignee, reviewer)
@@ -274,12 +275,24 @@ db.acceptanceCriteria.belongsTo(db.story, {
 // comment <-> story
 db.story.hasMany(db.comment, {
   as: "comment",
-  foreignKey: { allowNull: false },
+  foreignKey: { name: "storyId", allowNull: true },
   onDelete: "CASCADE",
 });
 db.comment.belongsTo(db.story, {
   as: "story",
-  foreignKey: { allowNull: false },
+  foreignKey: { name: "storyId", allowNull: true },
+  onDelete: "CASCADE",
+});
+
+// comment <-> acceptanceCriteria
+db.acceptanceCriteria.hasMany(db.comment, {
+  as: "comment",
+  foreignKey: { name: "acceptanceCriteriaId", allowNull: true },
+  onDelete: "CASCADE",
+});
+db.comment.belongsTo(db.acceptanceCriteria, {
+  as: "acceptanceCriteria",
+  foreignKey: { name: "acceptanceCriteriaId", allowNull: true },
   onDelete: "CASCADE",
 });
 

@@ -5,16 +5,16 @@ module.exports = (sequelize, Sequelize) => {
       allowNull: false,
     },
     description: {
-      type: Sequelize.STRING,
+      type: Sequelize.TEXT,
       allowNull: false,
     },
     priority: {
-      type: Sequelize.INTEGER,
-      allowNull: false,
+      type: Sequelize.STRING,
+      allowNull: true,
     },
     estimate: {
       type: Sequelize.INTEGER,
-      allowNull: false,
+      allowNull: true,
     },
   });
 

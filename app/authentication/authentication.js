@@ -11,7 +11,6 @@ const User = db.user;
  */
 authenticate = async (req, res, require = true) => {
   let auth = req.get("authorization");
-  console.log(auth);
   if (auth != null) {
     if (
       auth.startsWith("Basic ") &&
@@ -88,7 +87,6 @@ authenticate = async (req, res, require = true) => {
 
 authenticateRoute = async (req, res, next) => {
   let auth = req.get("authorization");
-  console.log(auth);
   if (auth != null) {
     if (
       auth.startsWith("Bearer ") &&
@@ -104,8 +102,6 @@ authenticateRoute = async (req, res, next) => {
         console.log(error);
       }
       if (session != null) {
-        console.log(session >= Date.now());
-        console.log(Date.now());
         if (session.expirationDate >= Date.now()) {
           next();
           return;
