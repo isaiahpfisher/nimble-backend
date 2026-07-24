@@ -12,8 +12,8 @@ jest.mock("../../app/models", () => ({
   // Sentinels for the associations findOne eager-loads; the controller only
   // passes these through to Sequelize, so identity is all the tests need.
   user: { name: "user" },
-  storyType: { name: "storyType" },
-  storyState: { name: "storyState" },
+  storyType: { name: "storyType", bulkCreate: jest.fn() },
+  storyState: { name: "storyState", bulkCreate: jest.fn() },
   sprint: { name: "sprint" },
   repository: { name: "repository" },
   Sequelize: { Op: {} },
@@ -120,6 +120,8 @@ describe("findOne", () => {
         { model: db.storyState, as: "storyState" },
         { model: db.sprint, as: "sprint" },
         { model: db.repository, as: "repository" },
+        { model: db.storyState, as: "branchCreationState" },
+        { model: db.storyState, as: "prReviewState" },
         {
           model: db.projectMember,
           as: "projectMembers",
@@ -188,6 +190,16 @@ describe("create", () => {
       projectId: 5,
       isManager: true,
     });
+    // The new project is seeded with the default story types and states,
+    // each scoped to the project that was just created.
+    expect(db.storyType.bulkCreate).toHaveBeenCalledTimes(1);
+    const seededTypes = db.storyType.bulkCreate.mock.calls[0][0];
+    expect(seededTypes.length).toBeGreaterThan(0);
+    expect(seededTypes.every((t) => t.projectId === 5)).toBe(true);
+    expect(db.storyState.bulkCreate).toHaveBeenCalledTimes(1);
+    const seededStates = db.storyState.bulkCreate.mock.calls[0][0];
+    expect(seededStates.length).toBeGreaterThan(0);
+    expect(seededStates.every((s) => s.projectId === 5)).toBe(true);
     expect(res.send).toHaveBeenCalledWith(created);
     expect(res.status).not.toHaveBeenCalled();
   });
@@ -266,6 +278,32 @@ describe("update", () => {
       title: "Updated",
       description: "d",
       deadline: req.body.deadline,
+      branchCreationStateId: undefined,
+      prReviewStateId: undefined,
+    });
+    expect(res.send).toHaveBeenCalledWith(project);
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it("updates the branch-creation and PR-review state ids", async () => {
+    authenticate.mockResolvedValue({ userId: 42 });
+    const update = jest.fn().mockResolvedValue({});
+    const project = { id: 3, update };
+    Project.findByPk.mockResolvedValue(project);
+    const req = {
+      params: { id: "3" },
+      body: { branchCreationStateId: 11, prReviewStateId: 22 },
+    };
+    const res = mockRes();
+
+    await controller.update(req, res);
+
+    expect(update).toHaveBeenCalledWith({
+      title: undefined,
+      description: undefined,
+      deadline: undefined,
+      branchCreationStateId: 11,
+      prReviewStateId: 22,
     });
     expect(res.send).toHaveBeenCalledWith(project);
     expect(res.status).not.toHaveBeenCalled();
@@ -288,6 +326,8 @@ describe("update", () => {
       title: "Only title",
       description: undefined,
       deadline: undefined,
+      branchCreationStateId: undefined,
+      prReviewStateId: undefined,
     });
     expect(res.send).toHaveBeenCalledWith(project);
   });
