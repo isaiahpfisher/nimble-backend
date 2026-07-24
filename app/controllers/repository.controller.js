@@ -1,17 +1,33 @@
 const db = require("../models");
 const Repository = db.repository;
 const Op = db.Sequelize.Op;
+const axios = require("axios");
 
 exports.create = async (req, res) => {
   try {
+    const { githubId, name } = req.body;
+
+    // Validate GitHub repository exists
+    try {
+      await axios.get(
+        `https://api.github.com/repositories/${githubId}`
+      );
+    } catch (error) {
+      return res.status(400).send({
+        message: "Invalid GitHub repository ID.",
+      });
+    }
+
     const repository = {
-      githubId: req.body.githubId,
-      name: req.body.name,
+      githubId: githubId,
+      name: name,
       projectId: req.params.projectId,
     };
 
     const data = await Repository.create(repository);
+
     res.send(data);
+
   } catch (err) {
     res.status(500).send({
       message: err.message || "Error creating repository.",
