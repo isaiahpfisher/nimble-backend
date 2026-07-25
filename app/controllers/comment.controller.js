@@ -110,7 +110,7 @@ exports.createForStory = async (req, res) => {
       userId: userId,
       action: ACTIVITY_ACTION.CREATED,
       metadata: {
-        content: data.content?.slice(0, 100),
+        content: data.content,
         subjectType: SUBJECT_TYPE.STORY,
         subjectLabel: story.title,
         user: `${user.firstName} ${user.lastName}`,
@@ -189,7 +189,7 @@ exports.createForCriterion = async (req, res) => {
       userId: userId,
       action: ACTIVITY_ACTION.CREATED,
       metadata: {
-        content: data.content?.slice(0, 100),
+        content: data.content,
         subjectType: SUBJECT_TYPE.ACCEPTANCE_CRITERIA,
         subjectLabel: criterion.title,
         user: `${user.firstName} ${user.lastName}`,
@@ -271,21 +271,24 @@ exports.delete = async (req, res) => {
     }
 
     let label;
+    let parentId;
     if (comment.acceptanceCriteriaId) {
       const acceptanceCriteria = await AcceptanceCriteria.findByPk(comment.acceptanceCriteriaId);
       label = acceptanceCriteria.title;
+      parentId = acceptanceCriteria.storyId;
     } else {
       const story = await Story.findByPk(comment.storyId);
       label = story.title;
+      parentId = story.id;
     }
 
     await recordActivity({
-      storyId: req.params.storyId,
+      storyId: parentId,
       subjectType: SUBJECT_TYPE.COMMENT,
       subjectId: comment.id,
       action: ACTIVITY_ACTION.DELETED,
       metadata: {
-        content: comment.content?.slice(0, 100),
+        content: comment.content,
         subjectType: comment.acceptanceCriteriaId ? SUBJECT_TYPE.ACCEPTANCE_CRITERIA : SUBJECT_TYPE.STORY,
         subjectLabel: label,
         user: `${user.firstName} ${user.lastName}`,

@@ -45,24 +45,10 @@ describe("exported constants", () => {
     });
   });
 
-  it("exposes the change operations", () => {
-    expect(loadActivity().CHANGE_OPERATION).toEqual({
-      ADDED: "added",
-      REMOVED: "removed",
-    });
-  });
-
   it("exposes the relation directions", () => {
     expect(loadActivity().RELATION_DIRECTION).toEqual({
       OUTGOING: "outgoing",
       INCOMING: "incoming",
-    });
-  });
-
-  it("exposes the comment targets", () => {
-    expect(loadActivity().COMMENT_TARGET).toEqual({
-      STORY: "story",
-      ACCEPTANCE_CRITERIA: "acceptanceCriteria",
     });
   });
 
@@ -78,12 +64,7 @@ describe("exported constants", () => {
 
 describe("story field configuration", () => {
   it("tracks the scalar story columns that belong in the history", () => {
-    expect(loadActivity().STORY_PLAIN_FIELDS).toEqual([
-      "title",
-      "description",
-      "priority",
-      "estimate",
-    ]);
+    expect(loadActivity().STORY_PLAIN_FIELDS).toEqual(["title", "description", "priority", "estimate"]);
   });
 
   it("keys the association config by the story's foreign key columns", () => {
@@ -94,6 +75,7 @@ describe("story field configuration", () => {
       "assigneeId",
       "reporterId",
       "reviewerId",
+      "repositoryId",
     ]);
   });
 
@@ -132,6 +114,7 @@ describe("story field configuration", () => {
       assigneeId: "assignee",
       reporterId: "reporter",
       reviewerId: "reviewer",
+      repositoryId: "repository",
     });
   });
 });

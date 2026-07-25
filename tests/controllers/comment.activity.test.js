@@ -107,17 +107,6 @@ describe("createForStory", () => {
     expect(res.status).not.toHaveBeenCalled();
   });
 
-  it("truncates long comment bodies in the metadata", async () => {
-    const long = "x".repeat(250);
-    const comment = mockComment({ content: long });
-    Story.findOne.mockResolvedValue(storyWithComment(comment));
-    const req = { params: { storyId: "3" }, body: { content: long } };
-
-    await controller.createForStory(req, mockRes());
-
-    expect(recordActivity.mock.calls[0][0].metadata.content).toBe("x".repeat(100));
-  });
-
   it("records nothing when the comment body is empty", async () => {
     Story.findOne.mockResolvedValue(storyWithComment(mockComment()));
     const req = { params: { storyId: "3" }, body: { content: "" } };
@@ -187,7 +176,7 @@ describe("delete", () => {
     await controller.delete(req, res);
 
     expect(recordActivity).toHaveBeenCalledWith({
-      storyId: "3",
+      storyId: 3,
       subjectType: "comment",
       subjectId: 9,
       userId: 42,

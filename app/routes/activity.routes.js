@@ -6,5 +6,7 @@ module.exports = (app) => {
   // Retrieve all Activity
   router.get("/activities/", Activity.findAll);
 
+  router.get("/projects/:projectId/stories/:storyId/activity/", Activity.findAllForStory);
+
   app.use("/nimbleapi", router);
 };

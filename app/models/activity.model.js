@@ -1,3 +1,12 @@
+function parseJsonValue(raw) {
+  if (typeof raw !== "string") return raw ?? null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 module.exports = (sequelize, Sequelize) => {
   const Activity = sequelize.define("activity", {
     subjectType: {
@@ -18,6 +27,9 @@ module.exports = (sequelize, Sequelize) => {
       type: Sequelize.JSON,
       allowNull: false,
       defaultValue: {},
+      get() {
+        return parseJsonValue(this.getDataValue("metadata"));
+      },
     },
   });
 

@@ -15,19 +15,9 @@ const SUBJECT_TYPE = {
   RELATION: "relation",
 };
 
-const CHANGE_OPERATION = {
-  ADDED: "added",
-  REMOVED: "removed",
-};
-
 const RELATION_DIRECTION = {
   OUTGOING: "outgoing",
   INCOMING: "incoming",
-};
-
-const COMMENT_TARGET = {
-  STORY: "story",
-  ACCEPTANCE_CRITERIA: "acceptanceCriteria",
 };
 
 const STORY_PLAIN_FIELDS = ["title", "description", "priority", "estimate"];
@@ -51,6 +41,11 @@ const STORY_ASSOC_FIELDS = {
     model: () => db.user,
     label: (r) => `${r.firstName} ${r.lastName}`,
   },
+  repositoryId: {
+    attribute: "repository",
+    model: () => db.repository,
+    label: (r) => r.name,
+  },
 };
 
 async function recordActivity({ storyId, subjectType, subjectId, action, metadata, userId, changes }) {
@@ -72,9 +67,7 @@ async function recordActivity({ storyId, subjectType, subjectId, action, metadat
 module.exports = {
   ACTIVITY_ACTION,
   SUBJECT_TYPE,
-  CHANGE_OPERATION,
   RELATION_DIRECTION,
-  COMMENT_TARGET,
   STORY_PLAIN_FIELDS,
   STORY_ASSOC_FIELDS,
   recordActivity,
