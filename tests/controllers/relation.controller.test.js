@@ -8,13 +8,26 @@ jest.mock("../../app/models", () => ({
   },
   story: {
     findAll: jest.fn(),
+    // both mutations re-read the two sides to label them in the history
+    findByPk: jest.fn(),
+  },
+  user: {
+    findByPk: jest.fn(),
   },
   Sequelize: { Op: { in: "in", or: "or" } },
+}));
+
+// The activity history is asserted in relation.activity.test.js; here it is
+// stubbed so these tests only see the controller's own behaviour.
+jest.mock("../../app/utils/activity", () => ({
+  ...jest.requireActual("../../app/utils/activity"),
+  recordActivity: jest.fn().mockResolvedValue(undefined),
 }));
 
 const db = require("../../app/models");
 const Relation = db.relation;
 const Story = db.story;
+const User = db.user;
 const Op = db.Sequelize.Op;
 const controller = require("../../app/controllers/relation.controller");
 
@@ -43,6 +56,8 @@ beforeEach(() => {
   jest.clearAllMocks();
   authenticate = jest.fn().mockResolvedValue({ userId: 42 });
   global.authenticate = authenticate;
+  User.findByPk.mockResolvedValue({ id: 42, firstName: "Ada", lastName: "Lovelace" });
+  Story.findByPk.mockImplementation((id) => Promise.resolve({ id: Number(id), title: `Story ${id}` }));
 });
 
 afterEach(() => {

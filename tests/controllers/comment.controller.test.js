@@ -7,9 +7,12 @@ jest.mock("../../app/models", () => ({
   },
   story: {
     findOne: jest.fn(),
+    // delete() re-reads the comment's parent by primary key to label the history
+    findByPk: jest.fn(),
   },
   acceptanceCriteria: {
     findOne: jest.fn(),
+    findByPk: jest.fn(),
   },
   user: {
     findByPk: jest.fn(),
@@ -24,6 +27,13 @@ jest.mock("../../app/utils/email", () => ({
   notifyMentionedUser: jest.fn().mockResolvedValue(undefined),
   commentToPlainText: jest.fn((s) => s),
   storyUrl: jest.fn(() => "http://example.test/story"),
+}));
+
+// The activity history is asserted in comment.activity.test.js; here it is
+// stubbed so these tests only see the controller's own behaviour.
+jest.mock("../../app/utils/activity", () => ({
+  ...jest.requireActual("../../app/utils/activity"),
+  recordActivity: jest.fn().mockResolvedValue(undefined),
 }));
 
 const db = require("../../app/models");
@@ -75,6 +85,9 @@ beforeEach(() => {
   });
   // No mentions by default; individual tests override for mention coverage.
   User.findAll.mockResolvedValue([]);
+  // delete() labels the history with the comment's parent story or criterion.
+  Story.findByPk.mockResolvedValue({ id: 3, title: "Add login page" });
+  AcceptanceCriteria.findByPk.mockResolvedValue({ id: 5, title: "Login succeeds" });
 });
 
 afterEach(() => {

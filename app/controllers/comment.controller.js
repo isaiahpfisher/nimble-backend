@@ -5,11 +5,8 @@ const User = db.user;
 const AcceptanceCriteria = db.acceptanceCriteria;
 const Op = db.Sequelize.Op;
 const { httpError } = require("../utils/httpUtils");
-const {
-  notifyMentionedUser,
-  commentToPlainText,
-  storyUrl,
-} = require("../utils/email");
+const { notifyMentionedUser, commentToPlainText, storyUrl } = require("../utils/email");
+const { recordActivity, ACTIVITY_ACTION, SUBJECT_TYPE } = require("../utils/activity");
 
 // helper functions for validation
 async function findStoryOrFail(id) {
@@ -106,10 +103,22 @@ exports.createForStory = async (req, res) => {
       },
     });
 
+    await recordActivity({
+      storyId: story.id,
+      subjectType: SUBJECT_TYPE.COMMENT,
+      subjectId: data.id,
+      userId: userId,
+      action: ACTIVITY_ACTION.CREATED,
+      metadata: {
+        content: data.content?.slice(0, 100),
+        subjectType: SUBJECT_TYPE.STORY,
+        subjectLabel: story.title,
+        user: `${user.firstName} ${user.lastName}`,
+      },
+    });
+
     try {
-      const mentionedUsers = (await getMentionedUsers(data.content)).filter(
-        (u) => u.id !== userId,
-      );
+      const mentionedUsers = (await getMentionedUsers(data.content)).filter((u) => u.id !== userId);
       await Promise.all(
         mentionedUsers.map(
           async (mentionedUser) =>
@@ -173,10 +182,22 @@ exports.createForCriterion = async (req, res) => {
       },
     });
 
+    await recordActivity({
+      storyId: parentStory.id,
+      subjectType: SUBJECT_TYPE.COMMENT,
+      subjectId: data.id,
+      userId: userId,
+      action: ACTIVITY_ACTION.CREATED,
+      metadata: {
+        content: data.content?.slice(0, 100),
+        subjectType: SUBJECT_TYPE.ACCEPTANCE_CRITERIA,
+        subjectLabel: criterion.title,
+        user: `${user.firstName} ${user.lastName}`,
+      },
+    });
+
     try {
-      const mentionedUsers = (await getMentionedUsers(data.content)).filter(
-        (u) => u.id !== userId,
-      );
+      const mentionedUsers = (await getMentionedUsers(data.content)).filter((u) => u.id !== userId);
       await Promise.all(
         mentionedUsers.map(
           async (mentionedUser) =>
@@ -218,10 +239,7 @@ exports.update = async (req, res) => {
     }
 
     if (comment.userId !== userId) {
-      throw httpError(
-        "You do not have permission to update this comment.",
-        400,
-      );
+      throw httpError("You do not have permission to update this comment.", 400);
     }
 
     await comment.update({
@@ -242,17 +260,38 @@ exports.delete = async (req, res) => {
 
   try {
     const comment = await Comment.findByPk(id);
+    const user = await User.findByPk(userId);
 
     if (!comment) {
       throw httpError(`Cannot find Comment with id = ${id}.`, 400);
     }
 
     if (comment.userId !== userId) {
-      throw httpError(
-        "You do not have permission to delete this comment.",
-        400,
-      );
+      throw httpError("You do not have permission to delete this comment.", 400);
     }
+
+    let label;
+    if (comment.acceptanceCriteriaId) {
+      const acceptanceCriteria = await AcceptanceCriteria.findByPk(comment.acceptanceCriteriaId);
+      label = acceptanceCriteria.title;
+    } else {
+      const story = await Story.findByPk(comment.storyId);
+      label = story.title;
+    }
+
+    await recordActivity({
+      storyId: req.params.storyId,
+      subjectType: SUBJECT_TYPE.COMMENT,
+      subjectId: comment.id,
+      action: ACTIVITY_ACTION.DELETED,
+      metadata: {
+        content: comment.content?.slice(0, 100),
+        subjectType: comment.acceptanceCriteriaId ? SUBJECT_TYPE.ACCEPTANCE_CRITERIA : SUBJECT_TYPE.STORY,
+        subjectLabel: label,
+        user: `${user.firstName} ${user.lastName}`,
+      },
+      userId: userId,
+    });
 
     await comment.destroy();
 

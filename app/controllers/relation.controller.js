@@ -1,8 +1,10 @@
 const db = require("../models");
 const Relation = db.relation;
 const Story = db.story;
+const User = db.user;
 const Op = db.Sequelize.Op;
 const { httpError } = require("../utils/httpUtils");
+const { recordActivity, ACTIVITY_ACTION, SUBJECT_TYPE, RELATION_DIRECTION } = require("../utils/activity");
 
 const RELATION_TYPES = ["BLOCKS", "RELATES_TO", "DUPLICATES", "PARENT_OF"];
 
@@ -19,7 +21,8 @@ exports.findAll = async (req, res) => {
 
 exports.create = async (req, res) => {
   try {
-    await authenticate(req, res);
+    const { userId } = await authenticate(req, res);
+    const user = await User.findByPk(userId);
 
     const { projectId, storyId } = req.params;
     const { type, storyOneId, storyTwoId } = req.body;
@@ -69,6 +72,38 @@ exports.create = async (req, res) => {
       storyTwoId: storyTwoId,
     });
 
+    const [storyOne, storyTwo] = await Promise.all([Story.findByPk(storyOneId), Story.findByPk(storyTwoId)]);
+
+    await recordActivity({
+      storyId: storyOne.id,
+      subjectType: SUBJECT_TYPE.RELATION,
+      subjectId: relation.id,
+      userId: userId,
+      action: ACTIVITY_ACTION.CREATED,
+      metadata: {
+        type: type,
+        self: { id: storyOne.id, title: storyOne.title },
+        other: { id: storyTwo.id, title: storyTwo.title },
+        user: `${user.firstName} ${user.lastName}`,
+        direction: RELATION_DIRECTION.OUTGOING,
+      },
+    });
+
+    await recordActivity({
+      storyId: storyTwo.id,
+      subjectType: SUBJECT_TYPE.RELATION,
+      subjectId: relation.id,
+      userId: userId,
+      action: ACTIVITY_ACTION.CREATED,
+      metadata: {
+        type: type,
+        self: { id: storyTwo.id, title: storyTwo.title },
+        other: { id: storyOne.id, title: storyOne.title },
+        user: `${user.firstName} ${user.lastName}`,
+        direction: RELATION_DIRECTION.INCOMING,
+      },
+    });
+
     res.send(relation);
   } catch (err) {
     res.status(err.statusCode || 500).send({
@@ -79,7 +114,8 @@ exports.create = async (req, res) => {
 
 exports.delete = async (req, res) => {
   try {
-    await authenticate(req, res);
+    const { userId } = await authenticate(req, res);
+    const user = await User.findByPk(userId);
 
     const { storyId, relationId } = req.params;
 
@@ -90,6 +126,41 @@ exports.delete = async (req, res) => {
     if (!relation) {
       throw httpError(`Cannot find Relation with id = ${relationId}.`, 404);
     }
+
+    const [storyOne, storyTwo] = await Promise.all([
+      Story.findByPk(relation.storyOneId),
+      Story.findByPk(relation.storyTwoId),
+    ]);
+
+    await recordActivity({
+      storyId: storyOne.id,
+      subjectType: SUBJECT_TYPE.RELATION,
+      subjectId: relation.id,
+      userId: userId,
+      action: ACTIVITY_ACTION.DELETED,
+      metadata: {
+        type: relation.type,
+        self: { id: storyOne.id, title: storyOne.title },
+        other: { id: storyTwo.id, title: storyTwo.title },
+        user: `${user.firstName} ${user.lastName}`,
+        direction: RELATION_DIRECTION.OUTGOING,
+      },
+    });
+
+    await recordActivity({
+      storyId: storyTwo.id,
+      subjectType: SUBJECT_TYPE.RELATION,
+      subjectId: relation.id,
+      userId: userId,
+      action: ACTIVITY_ACTION.DELETED,
+      metadata: {
+        type: relation.type,
+        self: { id: storyTwo.id, title: storyTwo.title },
+        other: { id: storyOne.id, title: storyOne.title },
+        user: `${user.firstName} ${user.lastName}`,
+        direction: RELATION_DIRECTION.INCOMING,
+      },
+    });
 
     await relation.destroy();
 

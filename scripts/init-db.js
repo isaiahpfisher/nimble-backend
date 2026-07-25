@@ -11,6 +11,9 @@ require("dotenv").config();
 
 const db = require("../app/models");
 const { getSalt, hashPassword } = require("../app/authentication/crypto");
+// Pull the vocabulary from the app itself so the seeded history can't drift
+// from what the controllers actually write.
+const { ACTIVITY_ACTION, SUBJECT_TYPE, RELATION_DIRECTION } = require("../app/utils/activity");
 
 const RELATION_TYPES = ["BLOCKS", "RELATES_TO", "DUPLICATES", "PARENT_OF"];
 const PRIORITIES = ["Blocker", "High", "Medium", "Low"];
@@ -18,19 +21,12 @@ const ESTIMATES = [1, 2, 3, 5, 8, 13];
 
 const args = process.argv.slice(2);
 const help = args.includes("--help") || args.includes("-h");
-const wipe =
-  args.includes("--wipe") ||
-  args.includes("--force") ||
-  !args.includes("--no-wipe");
+const wipe = args.includes("--wipe") || args.includes("--force") || !args.includes("--no-wipe");
 
 if (help) {
   console.log("Usage: node scripts/init-db.js [--no-wipe] [--help]");
-  console.log(
-    "  --no-wipe   Preserve existing tables and only sync without dropping them.",
-  );
-  console.log(
-    "  --wipe      Drop and recreate all tables before seeding (default).",
-  );
+  console.log("  --no-wipe   Preserve existing tables and only sync without dropping them.");
+  console.log("  --wipe      Drop and recreate all tables before seeding (default).");
   process.exit(0);
 }
 
@@ -68,6 +64,58 @@ const spreadOffsets = (count, startOffset, endOffset) => {
     out.push(startOffset + frac * span + jitter);
   }
   return out.sort((a, b) => a - b);
+};
+
+// -----------------------------------------------------------------------------
+// Activity history
+// - Every seeded row that a controller would have logged gets a matching
+//   activity, back-dated so the feed reads as a plausible timeline rather than
+//   a wall of rows all stamped "now".
+// - `storyWindow` remembers when each story was opened and closed so the
+//   entries hung off it can be scattered between those two points.
+// -----------------------------------------------------------------------------
+const storyWindow = new WeakMap();
+
+// A random day-offset inside [a, b]; used to place an entry somewhere in a
+// story's lifetime.
+const between = (a, b) => a + Math.random() * (b - a);
+
+const fullName = (user) => (user ? `${user.firstName} ${user.lastName}` : null);
+
+// Mirrors app/utils/activity.recordActivity, but back-dates the rows. Sequelize
+// keeps an explicit createdAt and, with `silent`, an explicit updatedAt too.
+const logActivity = async ({ storyId, subjectType, subjectId, action, metadata, user, at, changes }) => {
+  const timestamp = days(at);
+  const activity = await db.activity.create(
+    {
+      storyId,
+      subjectType,
+      subjectId,
+      action,
+      metadata: metadata ?? {},
+      userId: user ? user.id : null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+    { silent: true },
+  );
+
+  if (changes?.length) {
+    await db.activityChange.bulkCreate(
+      changes.map((c) => ({
+        activityId: activity.id,
+        attribute: c.attribute,
+        operation: c.operation ?? null,
+        oldValue: c.oldValue ?? null,
+        newValue: c.newValue ?? null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      })),
+      { silent: true },
+    );
+  }
+
+  return activity;
 };
 
 // A title dispenser that draws unique titles from a pool, appending a round
@@ -227,21 +275,41 @@ const createStory = async (ctx, o = {}) => {
   else if (o.reviewer) reviewerId = o.reviewer.id;
   else reviewerId = chance(0.65) ? rand(ctx.members).id : null;
 
-  return db.story.create({
-    title,
-    description: o.description || DESCRIPTIONS[typeName](title),
-    priority: o.priority || rand(PRIORITIES),
-    estimate: o.estimate ?? rand(ESTIMATES),
-    projectId: ctx.project.id,
-    sprintId: o.sprintId ?? null,
-    stateId: o.stateId,
-    typeId: type.id,
-    repositoryId,
-    reporterId: (o.reporter || rand(ctx.members)).id,
-    assigneeId,
-    reviewerId,
-    completedAt: o.completedAt ?? null,
+  // When the story was opened. Everything hung off it — the activity feed,
+  // comments, criteria — is placed relative to this, so it always sits in the
+  // past even for a sprint that hasn't started yet.
+  const createdOffset = o.createdOffset ?? -randInt(5, 40);
+  const completedOffset = o.completedOffset ?? null;
+
+  const story = await db.story.create(
+    {
+      title,
+      description: o.description || DESCRIPTIONS[typeName](title),
+      priority: o.priority || rand(PRIORITIES),
+      estimate: o.estimate ?? rand(ESTIMATES),
+      projectId: ctx.project.id,
+      sprintId: o.sprintId ?? null,
+      stateId: o.stateId,
+      typeId: type.id,
+      repositoryId,
+      reporterId: (o.reporter || rand(ctx.members)).id,
+      assigneeId,
+      reviewerId,
+      completedAt: o.completedAt ?? null,
+      createdAt: days(createdOffset),
+      updatedAt: days(completedOffset ?? createdOffset),
+    },
+    { silent: true },
+  );
+
+  storyWindow.set(story, {
+    opened: createdOffset,
+    // Open stories keep accruing history right up to now.
+    closed: completedOffset ?? 0,
+    completed: completedOffset != null,
   });
+
+  return story;
 };
 
 // Seed a sprint's worth of stories.
@@ -259,11 +327,12 @@ const seedSprint = async (ctx, opts) => {
   } = opts;
 
   const stories = [];
-  const offsets = spreadOffsets(
-    completedCount,
-    startOffset + 0.5,
-    completionEnd - 0.3,
-  );
+  const offsets = spreadOffsets(completedCount, startOffset + 0.5, completionEnd - 0.3);
+
+  // Stories are written up shortly before the sprint opens. A planned sprint
+  // starts in the future, so clamp the write-up to the recent past.
+  const plannedAt = Math.min(startOffset, -0.5);
+  const openedAt = () => plannedAt - Math.random() * 2;
 
   for (let i = 0; i < completedCount; i++) {
     stories.push(
@@ -271,6 +340,8 @@ const seedSprint = async (ctx, opts) => {
         sprintId: sprint.id,
         stateId: ctx.doneState.id,
         completedAt: days(offsets[i]),
+        createdOffset: openedAt(),
+        completedOffset: offsets[i],
       }),
     );
   }
@@ -279,6 +350,7 @@ const seedSprint = async (ctx, opts) => {
       await createStory(ctx, {
         sprintId: sprint.id,
         stateId: rand(ctx.openStates).id,
+        createdOffset: openedAt(),
       }),
     );
   }
@@ -288,66 +360,278 @@ const seedSprint = async (ctx, opts) => {
 // Attach acceptance criteria, comments, and activities to a batch of stories so
 // the demo has plenty of nested data to browse.
 const enrichStories = async (ctx, stories) => {
+  const memberById = new Map(ctx.members.map((m) => [m.id, m]));
+  const stateById = new Map(ctx.states.map((s) => [s.id, s]));
+
   for (const story of stories) {
     const isDone = story.completedAt != null;
+    const { opened, closed } = storyWindow.get(story);
+    const reporter = memberById.get(story.reporterId) || rand(ctx.members);
+    const assignee = memberById.get(story.assigneeId) || null;
+    // The state the story was filed in; the transitions below walk from here to
+    // whatever state it sits in now.
+    const firstState = ctx.openStates[0] || ctx.doneState;
 
-    // Acceptance criteria (~65% of stories get 1-3).
+    // --- The story itself ----------------------------------------------------
+    await logActivity({
+      storyId: story.id,
+      subjectType: SUBJECT_TYPE.STORY,
+      subjectId: story.id,
+      action: ACTIVITY_ACTION.CREATED,
+      user: reporter,
+      at: opened,
+      metadata: {
+        title: story.title,
+        state: firstState.name,
+        assignee: fullName(assignee),
+      },
+    });
+
+    // The assignment is its own edit a little after filing, the way it happens
+    // in the app: file the story, then hand it to someone.
+    if (assignee) {
+      await logActivity({
+        storyId: story.id,
+        subjectType: SUBJECT_TYPE.STORY,
+        subjectId: story.id,
+        action: ACTIVITY_ACTION.UPDATED,
+        user: reporter,
+        at: between(opened, opened + (closed - opened) * 0.25),
+        metadata: { user: fullName(reporter) },
+        changes: [
+          {
+            attribute: "assignee",
+            oldValue: null,
+            newValue: { id: assignee.id, label: fullName(assignee) },
+          },
+        ],
+      });
+    }
+
+    // A re-estimate part way through, on some stories.
+    if (chance(0.35)) {
+      const previous = rand(ESTIMATES.filter((e) => e !== story.estimate));
+      await logActivity({
+        storyId: story.id,
+        subjectType: SUBJECT_TYPE.STORY,
+        subjectId: story.id,
+        action: ACTIVITY_ACTION.UPDATED,
+        user: assignee || reporter,
+        at: between(opened, closed),
+        metadata: { user: fullName(assignee || reporter) },
+        changes: [{ attribute: "estimate", oldValue: previous, newValue: story.estimate }],
+      });
+    }
+
+    // A re-prioritisation, on fewer still.
+    if (chance(0.2)) {
+      const previous = rand(PRIORITIES.filter((p) => p !== story.priority));
+      await logActivity({
+        storyId: story.id,
+        subjectType: SUBJECT_TYPE.STORY,
+        subjectId: story.id,
+        action: ACTIVITY_ACTION.UPDATED,
+        user: rand(ctx.members),
+        at: between(opened, closed),
+        metadata: { user: fullName(rand(ctx.members)) },
+        changes: [{ attribute: "priority", oldValue: previous, newValue: story.priority }],
+      });
+    }
+
+    // --- State transitions ---------------------------------------------------
+    // Walk the board one column at a time, ending on the story's current state.
+    // A completed story lands in the done column exactly at its completedAt so
+    // the feed and the burndown agree.
+    const currentState = stateById.get(story.stateId) || firstState;
+    const path = ctx.states.slice(0, ctx.states.findIndex((s) => s.id === currentState.id) + 1);
+    const moveTimes = spreadOffsets(path.length - 1, opened + 0.2, closed);
+    for (let i = 1; i < path.length; i++) {
+      const landing = isDone && i === path.length - 1 ? closed : moveTimes[i - 1];
+      const mover = assignee || rand(ctx.members);
+      await logActivity({
+        storyId: story.id,
+        subjectType: SUBJECT_TYPE.STORY,
+        subjectId: story.id,
+        action: ACTIVITY_ACTION.UPDATED,
+        user: mover,
+        at: landing,
+        metadata: { user: fullName(mover) },
+        changes: [
+          {
+            attribute: "state",
+            oldValue: { id: path[i - 1].id, label: path[i - 1].name },
+            newValue: { id: path[i].id, label: path[i].name },
+          },
+        ],
+      });
+    }
+
+    // --- Acceptance criteria (~65% of stories get 1-3) -----------------------
     if (chance(0.65)) {
       for (const template of sample(AC_TEMPLATES, randInt(1, 3))) {
-        const status = isDone
-          ? chance(0.85)
-            ? "Passed"
-            : "Failed"
-          : rand(AC_STATUSES);
-        const ac = await db.acceptanceCriteria.create({
-          title: template.title,
-          description: template.description,
-          status,
+        const status = isDone ? (chance(0.85) ? "Passed" : "Failed") : rand(AC_STATUSES);
+        const writtenAt = between(opened, opened + (closed - opened) * 0.4);
+        const author = rand(ctx.members);
+
+        const ac = await db.acceptanceCriteria.create(
+          {
+            title: template.title,
+            description: template.description,
+            status,
+            storyId: story.id,
+            createdAt: days(writtenAt),
+            updatedAt: days(writtenAt),
+          },
+          { silent: true },
+        );
+
+        // Criteria start unverified, so that is what the feed shows first.
+        await logActivity({
           storyId: story.id,
+          subjectType: SUBJECT_TYPE.ACCEPTANCE_CRITERIA,
+          subjectId: ac.id,
+          action: ACTIVITY_ACTION.CREATED,
+          user: author,
+          at: writtenAt,
+          metadata: {
+            title: ac.title,
+            status: "Pending",
+            user: fullName(author),
+          },
         });
+
+        // ...and the verification that moved it is a second entry.
+        if (status !== "Pending") {
+          const verifier = rand(ctx.members);
+          await logActivity({
+            storyId: story.id,
+            subjectType: SUBJECT_TYPE.ACCEPTANCE_CRITERIA,
+            subjectId: ac.id,
+            action: ACTIVITY_ACTION.UPDATED,
+            user: verifier,
+            at: between(writtenAt, closed),
+            metadata: {
+              user: fullName(verifier),
+              title: ac.title,
+              status,
+            },
+            changes: [{ attribute: "status", oldValue: "Pending", newValue: status }],
+          });
+        }
+
         // Occasional comment on the criteria itself.
         if (chance(0.3)) {
-          await db.comment.create({
-            content: rand(COMMENT_SNIPPETS),
-            acceptanceCriteriaId: ac.id,
-            userId: rand(ctx.members).id,
+          const commentedAt = between(writtenAt, closed);
+          const commenter = rand(ctx.members);
+          const comment = await db.comment.create(
+            {
+              content: rand(COMMENT_SNIPPETS),
+              acceptanceCriteriaId: ac.id,
+              userId: commenter.id,
+              createdAt: days(commentedAt),
+              updatedAt: days(commentedAt),
+            },
+            { silent: true },
+          );
+          await logActivity({
+            storyId: story.id,
+            subjectType: SUBJECT_TYPE.COMMENT,
+            subjectId: comment.id,
+            action: ACTIVITY_ACTION.CREATED,
+            user: commenter,
+            at: commentedAt,
+            metadata: {
+              content: comment.content.slice(0, 100),
+              subjectType: SUBJECT_TYPE.ACCEPTANCE_CRITERIA,
+              subjectLabel: ac.title,
+              user: fullName(commenter),
+            },
           });
         }
       }
     }
 
-    // Story comments (~55% get 1-2).
-    if (chance(0.55)) {
-      for (let i = 0; i < randInt(1, 2); i++) {
-        await db.comment.create({
-          content: rand(COMMENT_SNIPPETS),
+    // A criterion that was written and then thought better of. The row is gone
+    // but the history still renders, which is the whole point of the metadata
+    // snapshot on the activity.
+    if (chance(0.08)) {
+      const template = rand(AC_TEMPLATES);
+      const author = rand(ctx.members);
+      const writtenAt = between(opened, closed);
+      const scrapped = await db.acceptanceCriteria.create(
+        {
+          title: template.title,
+          description: template.description,
+          status: "Pending",
           storyId: story.id,
-          userId: rand(ctx.members).id,
-        });
-      }
+          createdAt: days(writtenAt),
+          updatedAt: days(writtenAt),
+        },
+        { silent: true },
+      );
+      const acMeta = {
+        title: scrapped.title,
+        status: "Pending",
+        user: fullName(author),
+      };
+      await logActivity({
+        storyId: story.id,
+        subjectType: SUBJECT_TYPE.ACCEPTANCE_CRITERIA,
+        subjectId: scrapped.id,
+        action: ACTIVITY_ACTION.CREATED,
+        user: author,
+        at: writtenAt,
+        metadata: acMeta,
+      });
+      await logActivity({
+        storyId: story.id,
+        subjectType: SUBJECT_TYPE.ACCEPTANCE_CRITERIA,
+        subjectId: scrapped.id,
+        action: ACTIVITY_ACTION.DELETED,
+        user: author,
+        at: between(writtenAt, closed),
+        metadata: acMeta,
+      });
+      await scrapped.destroy();
     }
 
-    // Activity trail.
-    await db.activity.create({
-      action: "created",
-      changes: { title: story.title },
-      userId: story.reporterId || rand(ctx.members).id,
-      storyId: story.id,
-    });
-    if (isDone) {
-      await db.activity.create({
-        action: "updated",
-        changes: { stateId: [ctx.openStates[0].id, ctx.doneState.id] },
-        userId: story.assigneeId || rand(ctx.members).id,
-        storyId: story.id,
-      });
+    // --- Story comments (~55% get 1-2) ---------------------------------------
+    if (chance(0.55)) {
+      for (let i = 0; i < randInt(1, 2); i++) {
+        const commentedAt = between(opened, closed);
+        const commenter = rand(ctx.members);
+        const comment = await db.comment.create(
+          {
+            content: rand(COMMENT_SNIPPETS),
+            storyId: story.id,
+            userId: commenter.id,
+            createdAt: days(commentedAt),
+            updatedAt: days(commentedAt),
+          },
+          { silent: true },
+        );
+        await logActivity({
+          storyId: story.id,
+          subjectType: SUBJECT_TYPE.COMMENT,
+          subjectId: comment.id,
+          action: ACTIVITY_ACTION.CREATED,
+          user: commenter,
+          at: commentedAt,
+          metadata: {
+            content: comment.content.slice(0, 100),
+            subjectType: SUBJECT_TYPE.STORY,
+            subjectLabel: story.title,
+            user: fullName(commenter),
+          },
+        });
+      }
     }
   }
 };
 
 // Create random relations among a pool of stories, avoiding self-links and
 // duplicate pairs.
-const seedRelations = async (stories, count) => {
+const seedRelations = async (ctx, stories, count) => {
   const seen = new Set();
   let made = 0;
   let guard = 0;
@@ -359,11 +643,51 @@ const seedRelations = async (stories, count) => {
     const key = [a.id, b.id].sort().join("-");
     if (seen.has(key)) continue;
     seen.add(key);
-    await db.relation.create({
-      type: rand(RELATION_TYPES),
-      storyOneId: a.id,
-      storyTwoId: b.id,
-    });
+
+    const type = rand(RELATION_TYPES);
+    // The link can only be drawn once both stories exist, and only while the
+    // first of them is still being worked.
+    const windows = [storyWindow.get(a), storyWindow.get(b)];
+    const linkedAt = between(
+      Math.max(windows[0].opened, windows[1].opened),
+      Math.max(windows[0].closed, windows[1].closed),
+    );
+    const linker = rand(ctx.members);
+
+    const relation = await db.relation.create(
+      {
+        type,
+        storyOneId: a.id,
+        storyTwoId: b.id,
+        createdAt: days(linkedAt),
+        updatedAt: days(linkedAt),
+      },
+      { silent: true },
+    );
+
+    // One entry per side, mirrored, so each story's feed reads from its own
+    // point of view.
+    for (const [self, other, direction] of [
+      [a, b, RELATION_DIRECTION.OUTGOING],
+      [b, a, RELATION_DIRECTION.INCOMING],
+    ]) {
+      await logActivity({
+        storyId: self.id,
+        subjectType: SUBJECT_TYPE.RELATION,
+        subjectId: relation.id,
+        action: ACTIVITY_ACTION.CREATED,
+        user: linker,
+        at: linkedAt,
+        metadata: {
+          type,
+          self: { id: self.id, title: self.title },
+          other: { id: other.id, title: other.title },
+          user: fullName(linker),
+          direction,
+        },
+      });
+    }
+
     made += 1;
   }
 };
@@ -372,21 +696,29 @@ const run = async () => {
   try {
     console.log(`Syncing database${wipe ? " (force=true)" : ""}...`);
     if (wipe) {
-      // Disable FK checks so force:true can drop tables regardless of the
-      // referential order (users is referenced by stories, sessions, etc.).
+      // MySQL only: disable FK checks so force:true can drop tables regardless
+      // of the referential order (users is referenced by stories, sessions,
+      // etc.). Postgres needs none of this — its force:true emits
+      // DROP TABLE ... CASCADE, and `connection` there is a pg.Client with no
+      // .promise() and no FOREIGN_KEY_CHECKS to set.
       //
       // FOREIGN_KEY_CHECKS is a per-connection setting, and Sequelize runs on a
       // connection pool — a single SET only affects one pooled connection, but
       // force:true may issue its DROP TABLEs on others. Use an afterConnect hook
       // so every connection the pool opens during sync has checks disabled.
+      const isMysql = db.sequelize.getDialect() === "mysql";
       const disableFkChecks = async (connection) => {
         await connection.promise().query("SET FOREIGN_KEY_CHECKS = 0");
       };
-      db.sequelize.addHook("afterConnect", "disableFkChecks", disableFkChecks);
+      if (isMysql) {
+        db.sequelize.addHook("afterConnect", "disableFkChecks", disableFkChecks);
+      }
       try {
         await db.sequelize.sync({ force: true });
       } finally {
-        db.sequelize.removeHook("afterConnect", "disableFkChecks");
+        if (isMysql) {
+          db.sequelize.removeHook("afterConnect", "disableFkChecks");
+        }
       }
     } else {
       await db.sequelize.sync();
@@ -526,19 +858,8 @@ const run = async () => {
       }),
     );
 
-    const nimbleStateInfo = await buildStates(nimble, [
-      "Not Started",
-      "Ready",
-      "In Progress",
-      "In Review",
-      "Done",
-    ]);
-    const nimbleTypes = await buildTypes(nimble, [
-      "Feature",
-      "Bug",
-      "Chore",
-      "Spike",
-    ]);
+    const nimbleStateInfo = await buildStates(nimble, ["Not Started", "Ready", "In Progress", "In Review", "Done"]);
+    const nimbleTypes = await buildTypes(nimble, ["Feature", "Bug", "Chore", "Spike"]);
 
     const nimbleCtx = {
       project: nimble,
@@ -596,7 +917,7 @@ const run = async () => {
     }
 
     await enrichStories(nimbleCtx, nimbleStories);
-    await seedRelations(nimbleStories, 14);
+    await seedRelations(nimbleCtx, nimbleStories, 14);
 
     // --- Retrospectives (one per completed sprint) ---
     const retroSummaries = [
@@ -702,7 +1023,7 @@ const run = async () => {
       );
     }
     await enrichStories(atlasCtx, atlasStories);
-    await seedRelations(atlasStories, 5);
+    await seedRelations(atlasCtx, atlasStories, 5);
 
     // =========================================================================
     // Project 3: Beacon — Test User is NOT a member (access-control demo).
@@ -719,11 +1040,7 @@ const run = async () => {
       [isaiah, false],
       [users["mallory@example.com"], false],
     ]);
-    const beaconStateInfo = await buildStates(beacon, [
-      "Not Started",
-      "Building",
-      "Shipped",
-    ]);
+    const beaconStateInfo = await buildStates(beacon, ["Not Started", "Building", "Shipped"]);
     const beaconTypes = await buildTypes(beacon, ["Feature", "Bug"]);
     const beaconCtx = {
       project: beacon,
@@ -768,13 +1085,10 @@ const run = async () => {
       );
     }
     await enrichStories(beaconCtx, beaconStories);
-    await seedRelations(beaconStories, 4);
+    await seedRelations(beaconCtx, beaconStories, 4);
 
-    const totalStories =
-      nimbleStories.length + atlasStories.length + beaconStories.length;
-    console.log(
-      `Seeded ${allUsers.length} users, 3 projects, and ${totalStories} stories.`,
-    );
+    const totalStories = nimbleStories.length + atlasStories.length + beaconStories.length;
+    console.log(`Seeded ${allUsers.length} users, 3 projects, and ${totalStories} stories.`);
     console.log("Init complete.");
     process.exit(0);
   } catch (error) {

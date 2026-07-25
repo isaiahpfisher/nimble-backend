@@ -5,9 +5,7 @@ const sequelize = new Sequelize(dbConfig.DB, dbConfig.USER, dbConfig.PASSWORD, {
   port: dbConfig.PORT,
   dialect: dbConfig.dialect,
   logging: false,
-  dialectOptions: dbConfig.ssl
-    ? { ssl: { require: true, rejectUnauthorized: false } }
-    : {},
+  dialectOptions: dbConfig.ssl ? { ssl: { require: true, rejectUnauthorized: false } } : {},
   pool: {
     max: dbConfig.pool.max,
     min: dbConfig.pool.min,
@@ -22,6 +20,7 @@ db.sequelize = sequelize;
 db.user = require("./user.model.js")(sequelize, Sequelize);
 db.session = require("./session.model.js")(sequelize, Sequelize);
 db.activity = require("./activity.model.js")(sequelize, Sequelize);
+db.activityChange = require("./activityChange.model.js")(sequelize, Sequelize);
 db.project = require("./project.model.js")(sequelize, Sequelize);
 db.projectMember = require("./projectMember.model.js")(sequelize, Sequelize);
 db.repository = require("./repository.model.js")(sequelize, Sequelize);
@@ -32,10 +31,7 @@ db.retrospective = require("./retrospective.model.js")(sequelize, Sequelize);
 db.standup = require("./standup.model.js")(sequelize, Sequelize);
 db.story = require("./story.model.js")(sequelize, Sequelize);
 db.relation = require("./relation.model.js")(sequelize, Sequelize);
-db.acceptanceCriteria = require("./acceptanceCriteria.model.js")(
-  sequelize,
-  Sequelize,
-);
+db.acceptanceCriteria = require("./acceptanceCriteria.model.js")(sequelize, Sequelize);
 db.comment = require("./comment.model.js")(sequelize, Sequelize);
 
 // session
@@ -343,13 +339,13 @@ db.comment.belongsTo(db.user, {
 // activity <-> user
 db.user.hasMany(db.activity, {
   as: "activity",
-  foreignKey: { allowNull: false },
-  onDelete: "CASCADE",
+  foreignKey: { allowNull: true },
+  onDelete: "SET NULL",
 });
 db.activity.belongsTo(db.user, {
   as: "user",
-  foreignKey: { allowNull: false },
-  onDelete: "CASCADE",
+  foreignKey: { allowNull: true },
+  onDelete: "SET NULL",
 });
 
 // activity <-> story
@@ -360,6 +356,55 @@ db.story.hasMany(db.activity, {
 });
 db.activity.belongsTo(db.story, {
   as: "story",
+  foreignKey: { allowNull: false },
+  onDelete: "CASCADE",
+});
+
+// activity <-> subject (polymorphic on stories, ACs, and comments)
+// have to use constraints: false because subectId isn't a real FK
+db.activity.belongsTo(db.story, {
+  as: "subjectStory",
+  foreignKey: { name: "subjectId", allowNull: false },
+  constraints: false,
+});
+db.activity.belongsTo(db.acceptanceCriteria, {
+  as: "subjectAcceptanceCriteria",
+  foreignKey: { name: "subjectId", allowNull: false },
+  constraints: false,
+});
+db.activity.belongsTo(db.comment, {
+  as: "subjectComment",
+  foreignKey: { name: "subjectId", allowNull: false },
+  constraints: false,
+});
+
+db.story.hasMany(db.activity, {
+  as: "subjectActivity",
+  foreignKey: { name: "subjectId", allowNull: false },
+  constraints: false,
+  scope: { subjectType: "story" },
+});
+db.acceptanceCriteria.hasMany(db.activity, {
+  as: "subjectActivity",
+  foreignKey: { name: "subjectId", allowNull: false },
+  constraints: false,
+  scope: { subjectType: "acceptanceCriteria" },
+});
+db.comment.hasMany(db.activity, {
+  as: "subjectActivity",
+  foreignKey: { name: "subjectId", allowNull: false },
+  constraints: false,
+  scope: { subjectType: "comment" },
+});
+
+// activity <-> activityChange
+db.activity.hasMany(db.activityChange, {
+  as: "change",
+  foreignKey: { allowNull: false },
+  onDelete: "CASCADE",
+});
+db.activityChange.belongsTo(db.activity, {
+  as: "activity",
   foreignKey: { allowNull: false },
   onDelete: "CASCADE",
 });
