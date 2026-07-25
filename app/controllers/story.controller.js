@@ -202,7 +202,17 @@ exports.update = async (req, res) => {
       throw httpError("Missing required fields.", 400);
     }
 
-    const story = await Story.findByPk(storyId);
+    const story = await Story.findByPk(storyId, {
+      include: {
+        model: db.project,
+        as: "project",
+        attributes: ["id"],
+        include: {
+          model: db.storyState,
+          as: "completedState",
+        },
+      },
+    });
 
     if (!story) {
       throw httpError(`Cannot find Story with id = ${storyId}.`, 404);
@@ -239,7 +249,7 @@ exports.update = async (req, res) => {
       console.error("Failed to send story notification email:", emailError);
     }
 
-    await story.update({
+    const newStory = {
       title: req.body.title,
       description: req.body.description,
       typeId: req.body.typeId,
@@ -251,7 +261,17 @@ exports.update = async (req, res) => {
       reporterId: req.body.reporterId,
       assigneeId: req.body.assigneeId,
       reviewerId: req.body.reviewerId,
-    });
+    };
+
+    if (
+      req.body.stateId &&
+      req.body.stateId !== story.stateId &&
+      req.body.stateId == story.project?.completedState?.id
+    ) {
+      newStory.completedAt = new Date();
+    }
+
+    await story.update(newStory);
 
     res.send(story);
   } catch (err) {

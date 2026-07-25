@@ -119,6 +119,16 @@ db.project.belongsTo(db.storyState, {
   foreignKey: { name: "prReviewStateId", allowNull: true },
   onDelete: "SET NULL",
 });
+db.storyState.hasMany(db.project, {
+  as: "completedStateForProject",
+  foreignKey: { name: "completedStateId", allowNull: true },
+  onDelete: "SET NULL",
+});
+db.project.belongsTo(db.storyState, {
+  as: "completedState",
+  foreignKey: { name: "completedStateId", allowNull: true },
+  onDelete: "SET NULL",
+});
 
 // project <-> storyType
 db.project.hasMany(db.storyType, {

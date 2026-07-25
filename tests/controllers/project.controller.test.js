@@ -11,9 +11,10 @@ jest.mock("../../app/models", () => ({
   },
   // Sentinels for the associations findOne eager-loads; the controller only
   // passes these through to Sequelize, so identity is all the tests need.
-  user: { name: "user" },
+  // `user` also needs a real finder for adminCreate's manager lookup.
+  user: { name: "user", findByPk: jest.fn() },
   storyType: { name: "storyType", bulkCreate: jest.fn() },
-  storyState: { name: "storyState", bulkCreate: jest.fn() },
+  storyState: { name: "storyState", bulkCreate: jest.fn(), findOne: jest.fn() },
   sprint: { name: "sprint" },
   repository: { name: "repository" },
   Sequelize: { Op: {} },
@@ -166,9 +167,16 @@ describe("findOne", () => {
 describe("create", () => {
   it("creates a project and a manager membership", async () => {
     authenticate.mockResolvedValue({ userId: 42 });
-    const created = { id: 5 };
+    const created = { id: 5, update: jest.fn().mockResolvedValue({}) };
     Project.create.mockResolvedValue(created);
     ProjectMember.create.mockResolvedValue({});
+    // Seeded states come back with ids so the controller can point the
+    // project's completedStateId at the last one.
+    db.storyState.bulkCreate.mockResolvedValue([
+      { id: 10 },
+      { id: 11 },
+      { id: 12 },
+    ]);
     const req = {
       body: {
         title: "New Project",
@@ -200,6 +208,8 @@ describe("create", () => {
     const seededStates = db.storyState.bulkCreate.mock.calls[0][0];
     expect(seededStates.length).toBeGreaterThan(0);
     expect(seededStates.every((s) => s.projectId === 5)).toBe(true);
+    // The project's completed state is pointed at the last seeded state.
+    expect(created.update).toHaveBeenCalledWith({ completedStateId: 12 });
     expect(res.send).toHaveBeenCalledWith(created);
     expect(res.status).not.toHaveBeenCalled();
   });
@@ -253,6 +263,108 @@ describe("create", () => {
     const res = mockRes();
 
     await controller.create(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.send).toHaveBeenCalledWith({ message: "insert failed" });
+    expect(ProjectMember.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("adminCreate", () => {
+  it("creates a project owned by the named manager and seeds defaults", async () => {
+    db.user.findByPk.mockResolvedValue({ id: 7 });
+    const created = { id: 5, update: jest.fn().mockResolvedValue({}) };
+    Project.create.mockResolvedValue(created);
+    ProjectMember.create.mockResolvedValue({});
+    db.storyState.bulkCreate.mockResolvedValue([{ id: 20 }, { id: 21 }]);
+    const req = {
+      body: {
+        title: "New Project",
+        description: "A description",
+        deadline: futureDeadline(),
+        managerId: 7,
+      },
+    };
+    const res = mockRes();
+
+    await controller.adminCreate(req, res);
+
+    expect(db.user.findByPk).toHaveBeenCalledWith(7);
+    expect(ProjectMember.create).toHaveBeenCalledWith({
+      userId: 7,
+      projectId: 5,
+      isManager: true,
+    });
+    const seededTypes = db.storyType.bulkCreate.mock.calls[0][0];
+    expect(seededTypes.every((t) => t.projectId === 5)).toBe(true);
+    const seededStates = db.storyState.bulkCreate.mock.calls[0][0];
+    expect(seededStates.every((s) => s.projectId === 5)).toBe(true);
+    expect(created.update).toHaveBeenCalledWith({ completedStateId: 21 });
+    expect(res.send).toHaveBeenCalledWith(created);
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it("responds 400 when a required field is missing", async () => {
+    const req = {
+      body: { title: "t", description: "d", deadline: futureDeadline() },
+    };
+    const res = mockRes();
+
+    await controller.adminCreate(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.send).toHaveBeenCalledWith({ message: "Missing required fields." });
+    expect(Project.create).not.toHaveBeenCalled();
+  });
+
+  it("responds 400 for an invalid deadline", async () => {
+    const req = {
+      body: { title: "t", description: "d", deadline: "2000-01-01", managerId: 7 },
+    };
+    const res = mockRes();
+
+    await controller.adminCreate(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.send).toHaveBeenCalledWith({ message: "Invalid deadline." });
+    expect(Project.create).not.toHaveBeenCalled();
+  });
+
+  it("responds 404 when the manager does not exist", async () => {
+    db.user.findByPk.mockResolvedValue(null);
+    const req = {
+      body: {
+        title: "t",
+        description: "d",
+        deadline: futureDeadline(),
+        managerId: 99,
+      },
+    };
+    const res = mockRes();
+
+    await controller.adminCreate(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(res.send).toHaveBeenCalledWith({
+      message: "Cannot find User with id = 99.",
+    });
+    expect(Project.create).not.toHaveBeenCalled();
+  });
+
+  it("responds 500 when project creation fails", async () => {
+    db.user.findByPk.mockResolvedValue({ id: 7 });
+    Project.create.mockRejectedValue(new Error("insert failed"));
+    const req = {
+      body: {
+        title: "t",
+        description: "d",
+        deadline: futureDeadline(),
+        managerId: 7,
+      },
+    };
+    const res = mockRes();
+
+    await controller.adminCreate(req, res);
 
     expect(res.status).toHaveBeenCalledWith(500);
     expect(res.send).toHaveBeenCalledWith({ message: "insert failed" });
@@ -344,6 +456,39 @@ describe("update", () => {
     expect(res.send).toHaveBeenCalledWith({
       message: "Cannot find Project with id = 99.",
     });
+  });
+
+  it("updates the completed state id when it references a real state", async () => {
+    authenticate.mockResolvedValue({ userId: 42 });
+    const update = jest.fn().mockResolvedValue({});
+    const project = { id: 3, update };
+    Project.findByPk.mockResolvedValue(project);
+    db.storyState.findOne.mockResolvedValue({ id: 12 });
+    const req = { params: { id: "3" }, body: { completedStateId: 12 } };
+    const res = mockRes();
+
+    await controller.update(req, res);
+
+    expect(db.storyState.findOne).toHaveBeenCalledWith({ where: { id: 12 } });
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({ completedStateId: 12 }),
+    );
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it("responds 400 when the completed state id is not a real state", async () => {
+    authenticate.mockResolvedValue({ userId: 42 });
+    const update = jest.fn();
+    Project.findByPk.mockResolvedValue({ id: 3, update });
+    db.storyState.findOne.mockResolvedValue(null);
+    const req = { params: { id: "3" }, body: { completedStateId: 999 } };
+    const res = mockRes();
+
+    await controller.update(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.send).toHaveBeenCalledWith({ message: "Invalid completed state." });
+    expect(update).not.toHaveBeenCalled();
   });
 
   it("responds 400 for an invalid deadline", async () => {

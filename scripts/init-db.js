@@ -1,6 +1,10 @@
 // =============================================================================
 // INIT DATABASE
-// - AI was used to generate this file
+// - Seeds a large, demo-ready dataset across several projects.
+// - Story `completedAt` timestamps are deliberately spread across each sprint's
+//   window so the burndown chart shows a steady, realistic decline. See the
+//   `spreadOffsets` helper and `seedSprint` below.
+// - AI was used to generate this file.
 // =============================================================================
 
 require("dotenv").config();
@@ -9,6 +13,8 @@ const db = require("../app/models");
 const { getSalt, hashPassword } = require("../app/authentication/crypto");
 
 const RELATION_TYPES = ["BLOCKS", "RELATES_TO", "DUPLICATES", "PARENT_OF"];
+const PRIORITIES = ["Blocker", "High", "Medium", "Low"];
+const ESTIMATES = [1, 2, 3, 5, 8, 13];
 
 const args = process.argv.slice(2);
 const help = args.includes("--help") || args.includes("-h");
@@ -28,9 +34,339 @@ if (help) {
   process.exit(0);
 }
 
-// Helper: relative dates keep the seed data sensible no matter when it runs.
-const days = (n) => new Date(Date.now() + n * 24 * 60 * 60 * 1000);
+// -----------------------------------------------------------------------------
+// Date + random helpers — relative dates keep the seed sensible whenever it runs.
+// -----------------------------------------------------------------------------
+const DAY_MS = 24 * 60 * 60 * 1000;
+// `n` may be fractional so completions can land at any hour within a day.
+const days = (n) => new Date(Date.now() + n * DAY_MS);
 const hours = (n) => new Date(Date.now() + n * 60 * 60 * 1000);
+
+const rand = (arr) => arr[Math.floor(Math.random() * arr.length)];
+const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+const chance = (p) => Math.random() < p;
+const shuffle = (arr) => {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+};
+const sample = (arr, n) => shuffle(arr).slice(0, n);
+
+// Return `count` ascending day-offsets spread across [startOffset, endOffset],
+// with mild jitter. Used to scatter story completions so a burndown declines
+// steadily rather than dropping all at once.
+const spreadOffsets = (count, startOffset, endOffset) => {
+  if (count <= 0) return [];
+  const span = endOffset - startOffset;
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    const frac = (i + 0.5) / count;
+    const jitter = ((Math.random() - 0.5) * span) / (count * 1.5);
+    out.push(startOffset + frac * span + jitter);
+  }
+  return out.sort((a, b) => a - b);
+};
+
+// A title dispenser that draws unique titles from a pool, appending a round
+// number once the pool is exhausted so bulk generation never collides.
+const makeDispenser = (pool) => {
+  let bag = [];
+  let round = 0;
+  return () => {
+    if (!bag.length) {
+      bag = shuffle(pool);
+      round += 1;
+    }
+    const title = bag.pop();
+    return round > 1 ? `${title} (${round})` : title;
+  };
+};
+
+// -----------------------------------------------------------------------------
+// Content pools
+// -----------------------------------------------------------------------------
+const FEATURE_TITLES = [
+  "Implement user login",
+  "Password reset flow",
+  "Kanban board drag-and-drop",
+  "Email notifications on assignment",
+  "Dark mode support",
+  "Sprint burndown chart",
+  "Story search and filtering",
+  "Bulk edit stories",
+  "Markdown support in comments",
+  "@mentions in comments",
+  "Keyboard shortcuts for the board",
+  "CSV export of stories",
+  "Saved board filters",
+  "Project activity feed",
+  "Role-based access control",
+  "Custom story states",
+  "Sprint velocity report",
+  "Inline story estimation",
+  "Attachment uploads on stories",
+  "Slack integration for standups",
+  "Recurring sprint scheduling",
+  "Story templates",
+  "Multi-assignee support",
+  "Board swimlanes by assignee",
+  "Retrospective action items",
+  "Cumulative flow diagram",
+];
+const BUG_TITLES = [
+  "Fix session expiration bug",
+  "Board columns misalign on Safari",
+  "Comment timestamps show wrong timezone",
+  "Drag-and-drop drops card in wrong column",
+  "Email notifications sent twice",
+  "Estimate field accepts negative numbers",
+  "Search ignores archived stories",
+  "CSV export mangles UTF-8 characters",
+  "Sprint dates off by one day",
+  "Avatar images fail to load intermittently",
+  "Filter reset does not clear the query",
+  "Pagination skips the last page",
+  "Story count badge is stale after delete",
+  "Login redirect loops on expired token",
+];
+const CHORE_TITLES = [
+  "Upgrade Sequelize to latest",
+  "Add ESLint and Prettier config",
+  "Set up CI pipeline",
+  "Bump Node to the LTS release",
+  "Add database indexes for story queries",
+  "Write API integration tests",
+  "Document environment variables",
+  "Refactor auth middleware",
+  "Add request logging",
+  "Containerize the backend",
+  "Enable dependency vulnerability scanning",
+];
+const SPIKE_TITLES = [
+  "Spike: evaluate WebSocket vs polling",
+  "Spike: assess GraphQL adoption",
+  "Spike: benchmark board rendering performance",
+  "Spike: research SSO providers",
+  "Spike: evaluate feature-flag services",
+  "Spike: prototype offline support",
+];
+
+const DESCRIPTIONS = {
+  Feature: (t) => `As a user, I want ${t.toLowerCase()} so the product feels complete.`,
+  Bug: (t) => `Investigate and resolve: ${t.toLowerCase()}. Include a regression test.`,
+  Chore: (t) => `Engineering task: ${t.toLowerCase()}. No user-facing behavior change expected.`,
+  Spike: (t) => `Time-boxed investigation. ${t.replace(/^Spike:\s*/, "")} and report findings.`,
+};
+
+const COMMENT_SNIPPETS = [
+  "Starting on this today.",
+  "Pushed a branch, ready for a first look.",
+  "Blocked on the API contract — flagged in the channel.",
+  "Reproduced locally, digging into the root cause.",
+  "Rebased and resolved conflicts.",
+  "Left a couple review notes, nothing major.",
+  "Good to merge once CI is green.",
+  "Split this out from the parent story to keep it small.",
+  "Added tests for the edge cases we missed.",
+  "Design signed off on the latest mock.",
+  "Bumped priority after the demo feedback.",
+  "Nice work — this is a lot cleaner than the old flow.",
+];
+
+const AC_TEMPLATES = [
+  { title: "Happy path succeeds", description: "The primary flow completes without errors." },
+  { title: "Validation errors are shown", description: "Invalid input surfaces a clear message." },
+  { title: "Unauthorized access is rejected", description: "Requests without a valid session return 401." },
+  { title: "State persists across reloads", description: "Changes survive a full page refresh." },
+  { title: "Works on mobile widths", description: "Layout is usable down to 375px." },
+  { title: "Empty state is handled", description: "No data renders a helpful placeholder, not a crash." },
+  { title: "Loads within budget", description: "Initial render completes under two seconds." },
+];
+
+const AC_STATUSES = ["Pending", "Passed", "Failed"];
+
+// -----------------------------------------------------------------------------
+// Story generation helpers (project-scoped via a `ctx` object)
+// -----------------------------------------------------------------------------
+const pickTypeName = () => {
+  const r = Math.random();
+  if (r < 0.55) return "Feature";
+  if (r < 0.8) return "Bug";
+  if (r < 0.92) return "Chore";
+  return "Spike";
+};
+
+const dispensers = {
+  Feature: makeDispenser(FEATURE_TITLES),
+  Bug: makeDispenser(BUG_TITLES),
+  Chore: makeDispenser(CHORE_TITLES),
+  Spike: makeDispenser(SPIKE_TITLES),
+};
+
+// Create a single story, filling in sensible random values for anything the
+// caller doesn't pin down explicitly.
+const createStory = async (ctx, o = {}) => {
+  const typeName = o.typeName || pickTypeName();
+  const type = ctx.typeByName[typeName] || rand(Object.values(ctx.typeByName));
+  const title = o.title || dispensers[typeName]();
+
+  let repositoryId = null;
+  if (o.repositoryId !== undefined) repositoryId = o.repositoryId;
+  else if (ctx.repos.length && chance(0.6)) repositoryId = rand(ctx.repos).id;
+
+  let assigneeId;
+  if (o.assignee === null) assigneeId = null;
+  else if (o.assignee) assigneeId = o.assignee.id;
+  else assigneeId = chance(0.85) ? rand(ctx.members).id : null;
+
+  let reviewerId;
+  if (o.reviewer === null) reviewerId = null;
+  else if (o.reviewer) reviewerId = o.reviewer.id;
+  else reviewerId = chance(0.65) ? rand(ctx.members).id : null;
+
+  return db.story.create({
+    title,
+    description: o.description || DESCRIPTIONS[typeName](title),
+    priority: o.priority || rand(PRIORITIES),
+    estimate: o.estimate ?? rand(ESTIMATES),
+    projectId: ctx.project.id,
+    sprintId: o.sprintId ?? null,
+    stateId: o.stateId,
+    typeId: type.id,
+    repositoryId,
+    reporterId: (o.reporter || rand(ctx.members)).id,
+    assigneeId,
+    reviewerId,
+    completedAt: o.completedAt ?? null,
+  });
+};
+
+// Seed a sprint's worth of stories.
+//   completedCount stories land in the done state with `completedAt` spread
+//   across [startOffset, completionEnd], producing a clean burndown; the rest
+//   are left open in a random non-done state.
+const seedSprint = async (ctx, opts) => {
+  const {
+    sprint,
+    startOffset,
+    endOffset,
+    total,
+    completedCount,
+    completionEnd = endOffset, // active sprints cut this off at "now"
+  } = opts;
+
+  const stories = [];
+  const offsets = spreadOffsets(
+    completedCount,
+    startOffset + 0.5,
+    completionEnd - 0.3,
+  );
+
+  for (let i = 0; i < completedCount; i++) {
+    stories.push(
+      await createStory(ctx, {
+        sprintId: sprint.id,
+        stateId: ctx.doneState.id,
+        completedAt: days(offsets[i]),
+      }),
+    );
+  }
+  for (let i = 0; i < total - completedCount; i++) {
+    stories.push(
+      await createStory(ctx, {
+        sprintId: sprint.id,
+        stateId: rand(ctx.openStates).id,
+      }),
+    );
+  }
+  return stories;
+};
+
+// Attach acceptance criteria, comments, and activities to a batch of stories so
+// the demo has plenty of nested data to browse.
+const enrichStories = async (ctx, stories) => {
+  for (const story of stories) {
+    const isDone = story.completedAt != null;
+
+    // Acceptance criteria (~65% of stories get 1-3).
+    if (chance(0.65)) {
+      for (const template of sample(AC_TEMPLATES, randInt(1, 3))) {
+        const status = isDone
+          ? chance(0.85)
+            ? "Passed"
+            : "Failed"
+          : rand(AC_STATUSES);
+        const ac = await db.acceptanceCriteria.create({
+          title: template.title,
+          description: template.description,
+          status,
+          storyId: story.id,
+        });
+        // Occasional comment on the criteria itself.
+        if (chance(0.3)) {
+          await db.comment.create({
+            content: rand(COMMENT_SNIPPETS),
+            acceptanceCriteriaId: ac.id,
+            userId: rand(ctx.members).id,
+          });
+        }
+      }
+    }
+
+    // Story comments (~55% get 1-2).
+    if (chance(0.55)) {
+      for (let i = 0; i < randInt(1, 2); i++) {
+        await db.comment.create({
+          content: rand(COMMENT_SNIPPETS),
+          storyId: story.id,
+          userId: rand(ctx.members).id,
+        });
+      }
+    }
+
+    // Activity trail.
+    await db.activity.create({
+      action: "created",
+      changes: { title: story.title },
+      userId: story.reporterId || rand(ctx.members).id,
+      storyId: story.id,
+    });
+    if (isDone) {
+      await db.activity.create({
+        action: "updated",
+        changes: { stateId: [ctx.openStates[0].id, ctx.doneState.id] },
+        userId: story.assigneeId || rand(ctx.members).id,
+        storyId: story.id,
+      });
+    }
+  }
+};
+
+// Create random relations among a pool of stories, avoiding self-links and
+// duplicate pairs.
+const seedRelations = async (stories, count) => {
+  const seen = new Set();
+  let made = 0;
+  let guard = 0;
+  while (made < count && guard < count * 10) {
+    guard += 1;
+    const a = rand(stories);
+    const b = rand(stories);
+    if (a.id === b.id) continue;
+    const key = [a.id, b.id].sort().join("-");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    await db.relation.create({
+      type: rand(RELATION_TYPES),
+      storyOneId: a.id,
+      storyTwoId: b.id,
+    });
+    made += 1;
+  }
+};
 
 const run = async () => {
   try {
@@ -63,716 +399,383 @@ const run = async () => {
     // -------------------------------------------------------------------------
     // Users
     // -------------------------------------------------------------------------
-    const user = await db.user.create({
-      firstName: "Test",
-      lastName: "User",
-      isAdmin: true,
-      email: "admin@example.com",
-      password: passwordHash,
-      salt: salt,
-    });
-    const bob = await db.user.create({
-      firstName: "Bob",
-      lastName: "Builder",
-      email: "bob@example.com",
-      password: passwordHash,
-      salt: salt,
-    });
-    const carol = await db.user.create({
-      firstName: "Carol",
-      lastName: "Coder",
-      email: "carol@example.com",
-      password: passwordHash,
-      salt: salt,
-    });
-    const dave = await db.user.create({
-      firstName: "Dave",
-      lastName: "Designer",
-      email: "dave@example.com",
-      password: passwordHash,
-      salt: salt,
-    });
-    const erin = await db.user.create({
-      firstName: "Erin",
-      lastName: "Engineer",
-      email: "erin@example.com",
-      password: passwordHash,
-      salt: salt,
-    });
-    const frank = await db.user.create({
-      firstName: "Frank",
-      lastName: "Manager",
-      email: "frank@example.com",
-      password: passwordHash,
-      salt: salt,
-    });
-    const grace = await db.user.create({
-      firstName: "Grace",
-      lastName: "QA",
-      email: "grace@example.com",
-      password: passwordHash,
-      salt: salt,
-    });
-    const isaiah = await db.user.create({
-      firstName: "Isaiah",
-      lastName: "Fisher",
-      isAdmin: true,
-      email: "isaiah.fisher@eagles.oc.edu",
-      password: passwordHash,
-      salt: salt,
-    });
+    const userDefs = [
+      { firstName: "Test", lastName: "User", email: "admin@example.com", isAdmin: true },
+      { firstName: "Bob", lastName: "Builder", email: "bob@example.com" },
+      { firstName: "Carol", lastName: "Coder", email: "carol@example.com" },
+      { firstName: "Dave", lastName: "Designer", email: "dave@example.com" },
+      { firstName: "Erin", lastName: "Engineer", email: "erin@example.com" },
+      { firstName: "Frank", lastName: "Manager", email: "frank@example.com" },
+      { firstName: "Grace", lastName: "QA", email: "grace@example.com" },
+      { firstName: "Heidi", lastName: "Hacker", email: "heidi@example.com" },
+      { firstName: "Ivan", lastName: "Infra", email: "ivan@example.com" },
+      { firstName: "Judy", lastName: "Product", email: "judy@example.com" },
+      { firstName: "Mallory", lastName: "Mobile", email: "mallory@example.com" },
+      { firstName: "Oscar", lastName: "Ops", email: "oscar@example.com" },
+      { firstName: "Isaiah", lastName: "Fisher", email: "isaiah.fisher@eagles.oc.edu", isAdmin: true },
+    ];
 
-    const session = await db.session.create({
-      email: user.email,
-      userId: user.id,
+    const users = {};
+    for (const def of userDefs) {
+      users[def.email] = await db.user.create({
+        firstName: def.firstName,
+        lastName: def.lastName,
+        isAdmin: def.isAdmin || false,
+        email: def.email,
+        password: passwordHash,
+        salt,
+      });
+    }
+    const admin = users["admin@example.com"];
+    const bob = users["bob@example.com"];
+    const carol = users["carol@example.com"];
+    const dave = users["dave@example.com"];
+    const erin = users["erin@example.com"];
+    const frank = users["frank@example.com"];
+    const grace = users["grace@example.com"];
+    const isaiah = users["isaiah.fisher@eagles.oc.edu"];
+    const allUsers = Object.values(users);
+
+    await db.session.create({
+      email: admin.email,
+      userId: admin.id,
       expirationDate: days(1),
     });
 
     // -------------------------------------------------------------------------
-    // Project 1: Nimble (Test User is the manager) — richly populated
+    // Helper: build the standard set of states/types for a project and return a
+    // ready-to-use ctx.
     // -------------------------------------------------------------------------
-    const project = await db.project.create({
+    const buildStates = async (project, stateNames) => {
+      const states = [];
+      for (let i = 0; i < stateNames.length; i++) {
+        states.push(
+          await db.storyState.create({
+            name: stateNames[i],
+            order: i + 1,
+            projectId: project.id,
+          }),
+        );
+      }
+      const doneState = states[states.length - 1];
+      await project.update({ completedStateId: doneState.id });
+      return { states, doneState, openStates: states.slice(0, -1) };
+    };
+
+    const buildTypes = async (project, typeNames) => {
+      const typeByName = {};
+      for (const name of typeNames) {
+        typeByName[name] = await db.storyType.create({
+          name,
+          projectId: project.id,
+        });
+      }
+      return typeByName;
+    };
+
+    const addMembers = async (project, entries) => {
+      const members = [];
+      for (const [user, isManager] of entries) {
+        await db.projectMember.create({
+          isManager,
+          userId: user.id,
+          projectId: project.id,
+        });
+        members.push(user);
+      }
+      return members;
+    };
+
+    // =========================================================================
+    // Project 1: Nimble — the demo centerpiece with multiple sprints and a rich
+    // burndown history.
+    // =========================================================================
+    const nimble = await db.project.create({
       title: "Nimble",
       description: "Agile project management, reimagined.",
       deadline: days(60),
     });
 
-    const memberOwner = await db.projectMember.create({
-      isManager: true,
-      userId: user.id,
-      projectId: project.id,
-    });
-    const memberBob = await db.projectMember.create({
-      isManager: false,
-      userId: bob.id,
-      projectId: project.id,
-    });
-    const memberCarol = await db.projectMember.create({
-      isManager: false,
-      userId: carol.id,
-      projectId: project.id,
-    });
-    const memberDave = await db.projectMember.create({
-      isManager: false,
-      userId: dave.id,
-      projectId: project.id,
-    });
-    const memberErin = await db.projectMember.create({
-      isManager: false,
-      userId: erin.id,
-      projectId: project.id,
-    });
-    const memberGrace = await db.projectMember.create({
-      isManager: false,
-      userId: grace.id,
-      projectId: project.id,
-    });
-    const memberIsaiah = await db.projectMember.create({
-      isManager: false,
-      userId: isaiah.id,
-      projectId: project.id,
-    });
+    const nimbleMembers = await addMembers(nimble, [
+      [admin, true],
+      [frank, true],
+      [bob, false],
+      [carol, false],
+      [dave, false],
+      [erin, false],
+      [grace, false],
+      [isaiah, false],
+      [users["heidi@example.com"], false],
+      [users["ivan@example.com"], false],
+      [users["judy@example.com"], false],
+    ]);
 
-    // --- Repositories ---
-    const repository = await db.repository.create({
-      githubId: "123456789",
-      name: "nimble-backend",
-      projectId: project.id,
-    });
-    const repositoryFrontend = await db.repository.create({
-      githubId: "987654321",
-      name: "nimble-frontend",
-      projectId: project.id,
-    });
+    const nimbleRepos = [];
+    nimbleRepos.push(
+      await db.repository.create({
+        githubId: "123456789",
+        name: "nimble-backend",
+        projectId: nimble.id,
+      }),
+    );
+    nimbleRepos.push(
+      await db.repository.create({
+        githubId: "987654321",
+        name: "nimble-frontend",
+        projectId: nimble.id,
+      }),
+    );
 
-    // --- Story states ---
-    const stateBacklog = await db.storyState.create({
-      name: "Not Started",
-      order: 1,
-      projectId: project.id,
-    });
-    const stateReady = await db.storyState.create({
-      name: "Ready",
-      order: 2,
-      projectId: project.id,
-    });
-    const stateInProgress = await db.storyState.create({
-      name: "In Progress",
-      order: 3,
-      projectId: project.id,
-    });
-    const stateReview = await db.storyState.create({
-      name: "In Review",
-      order: 4,
-      projectId: project.id,
-    });
-    const stateDone = await db.storyState.create({
-      name: "Done",
-      order: 5,
-      projectId: project.id,
-    });
+    const nimbleStateInfo = await buildStates(nimble, [
+      "Not Started",
+      "Ready",
+      "In Progress",
+      "In Review",
+      "Done",
+    ]);
+    const nimbleTypes = await buildTypes(nimble, [
+      "Feature",
+      "Bug",
+      "Chore",
+      "Spike",
+    ]);
 
-    // --- Story types ---
-    const typeFeature = await db.storyType.create({
-      name: "Feature",
-      projectId: project.id,
-    });
-    const typeBug = await db.storyType.create({
-      name: "Bug",
-      projectId: project.id,
-    });
-    const typeChore = await db.storyType.create({
-      name: "Chore",
-      projectId: project.id,
-    });
-    const typeSpike = await db.storyType.create({
-      name: "Spike",
-      projectId: project.id,
-    });
+    const nimbleCtx = {
+      project: nimble,
+      members: nimbleMembers,
+      repos: nimbleRepos,
+      typeByName: nimbleTypes,
+      states: nimbleStateInfo.states,
+      openStates: nimbleStateInfo.openStates,
+      doneState: nimbleStateInfo.doneState,
+    };
 
-    // --- Sprints ---
-    const sprint0 = await db.sprint.create({
-      title: "Sprint 0 (completed)",
-      startDate: days(-28),
-      endDate: days(-14),
-      status: "Completed",
-      projectId: project.id,
-    });
-    const sprint = await db.sprint.create({
-      title: "Sprint 1",
-      startDate: days(-1),
-      endDate: days(13),
-      status: "Active",
-      projectId: project.id,
-    });
-    const sprint2 = await db.sprint.create({
-      title: "Sprint 2 (planned)",
-      startDate: days(14),
-      endDate: days(28),
-      status: "Planned",
-      projectId: project.id,
-    });
+    // --- Sprints (14-day cadence) ---
+    // Three completed sprints (fully burned down), one active (partway through),
+    // one planned.
+    const nimbleSprintDefs = [
+      { title: "Sprint 1", start: -52, end: -38, status: "Completed", total: 11, completed: 11 },
+      { title: "Sprint 2", start: -38, end: -24, status: "Completed", total: 13, completed: 13 },
+      { title: "Sprint 3", start: -24, end: -10, status: "Completed", total: 12, completed: 12 },
+      { title: "Sprint 4", start: -8, end: 6, status: "Active", total: 15, completed: 9, completionEnd: 0 },
+      { title: "Sprint 5 (planned)", start: 7, end: 21, status: "Planned", total: 9, completed: 0 },
+    ];
 
-    // --- Retrospectives (one per sprint) ---
-    const retrospective0 = await db.retrospective.create({
-      agenda: "Review Sprint 0 kickoff and tooling setup.",
-      summary: "Repo scaffolding done; onboarding docs still thin.",
-      sprintId: sprint0.id,
-    });
-    const retrospective = await db.retrospective.create({
-      agenda: "Review Sprint 1 outcomes and blockers.",
-      summary: "Velocity on track; CI flakiness slowed reviews.",
-      sprintId: sprint.id,
-    });
+    const nimbleSprints = [];
+    const nimbleStories = [];
+    for (const def of nimbleSprintDefs) {
+      const sprint = await db.sprint.create({
+        title: def.title,
+        goal: `Deliver committed scope for ${def.title}.`,
+        startDate: days(def.start),
+        endDate: days(def.end),
+        status: def.status,
+        projectId: nimble.id,
+      });
+      nimbleSprints.push(sprint);
 
-    // --- Standups ---
-    const standup1 = await db.standup.create({
-      agenda: "Daily sync",
-      notes: "Auth flow in progress; DB scaffolding merged.",
-      date: days(0),
-      sprintId: sprint.id,
-    });
-    const standup2 = await db.standup.create({
-      agenda: null,
-      notes: "Repository integration underway; no blockers.",
-      date: days(1),
-      sprintId: sprint.id,
-    });
-    const standup3 = await db.standup.create({
-      agenda: "Mid-sprint check-in",
-      notes: "Login endpoint in review; bug repro confirmed.",
-      date: days(2),
-      sprintId: sprint.id,
-    });
+      const stories = await seedSprint(nimbleCtx, {
+        sprint,
+        startOffset: def.start,
+        endOffset: def.end,
+        total: def.total,
+        completedCount: def.completed,
+        completionEnd: def.completionEnd ?? def.end,
+      });
+      nimbleStories.push(...stories);
+    }
 
-    // -------------------------------------------------------------------------
-    // Stories (nullable FKs exercised: repository/reporter/assignee/reviewer)
-    // -------------------------------------------------------------------------
-    const storyLogin = await db.story.create({
-      title: "Implement user login",
-      description: "Users can authenticate with email and password.",
-      priority: "High",
-      estimate: 3,
-      projectId: project.id,
-      sprintId: sprint.id,
-      stateId: stateInProgress.id,
-      typeId: typeFeature.id,
-      repositoryId: repository.id,
-      reporterId: user.id,
-      assigneeId: bob.id,
-      reviewerId: carol.id,
-    });
-    const storyBug = await db.story.create({
-      title: "Fix session expiration bug",
-      description: "Sessions expire earlier than the configured window.",
-      priority: "Low",
-      estimate: 5,
-      projectId: project.id,
-      sprintId: sprint.id,
-      stateId: stateBacklog.id,
-      typeId: typeBug.id,
-      repositoryId: null,
-      reporterId: carol.id,
-      assigneeId: user.id,
-      reviewerId: null,
-    });
-    const storyChore = await db.story.create({
-      title: "Upgrade Sequelize to latest",
-      description: "Bump ORM version and adjust breaking changes.",
-      priority: "Blocker",
-      estimate: 2,
-      projectId: project.id,
-      sprintId: sprint.id,
-      stateId: stateReview.id,
-      typeId: typeChore.id,
-      repositoryId: repository.id,
-      reporterId: user.id,
-      assigneeId: carol.id,
-      reviewerId: bob.id,
-    });
-    const storyDone = await db.story.create({
-      title: "Scaffold database models",
-      description: "Create all Sequelize models and relationships.",
-      priority: "Medium",
-      estimate: 8,
-      projectId: project.id,
-      sprintId: sprint0.id,
-      stateId: stateDone.id,
-      typeId: typeFeature.id,
-      repositoryId: repository.id,
-      reporterId: bob.id,
-      assigneeId: bob.id,
-      reviewerId: user.id,
-    });
-    const storyPassword = await db.story.create({
-      title: "Password reset flow",
-      description: "Users can request and complete a password reset by email.",
-      priority: "High",
-      estimate: 5,
-      projectId: project.id,
-      sprintId: sprint.id,
-      stateId: stateReady.id,
-      typeId: typeFeature.id,
-      repositoryId: repository.id,
-      reporterId: user.id,
-      assigneeId: erin.id,
-      reviewerId: carol.id,
-    });
-    const storyBoard = await db.story.create({
-      title: "Kanban board drag-and-drop",
-      description: "Drag stories between columns to change their state.",
-      priority: "Medium",
-      estimate: 8,
-      projectId: project.id,
-      sprintId: sprint.id,
-      stateId: stateInProgress.id,
-      typeId: typeFeature.id,
-      repositoryId: repositoryFrontend.id,
-      reporterId: dave.id,
-      assigneeId: dave.id,
-      reviewerId: erin.id,
-    });
-    const storyNotifications = await db.story.create({
-      title: "Email notifications on assignment",
-      description: "Notify a user by email when a story is assigned to them.",
-      priority: "Low",
-      estimate: 3,
-      projectId: project.id,
-      sprintId: sprint2.id,
-      stateId: stateBacklog.id,
-      typeId: typeFeature.id,
-      repositoryId: repository.id,
-      reporterId: frank.id,
-      assigneeId: null,
-      reviewerId: null,
-    });
-    const storySpike = await db.story.create({
-      title: "Spike: evaluate WebSocket vs polling",
-      description: "Research real-time update options for the board.",
-      priority: "Medium",
-      estimate: 2,
-      projectId: project.id,
-      sprintId: sprint.id,
-      stateId: stateInProgress.id,
-      typeId: typeSpike.id,
-      repositoryId: null,
-      reporterId: erin.id,
-      assigneeId: erin.id,
-      reviewerId: null,
-    });
-    const storyDarkMode = await db.story.create({
-      title: "Dark mode support",
-      description: "Add a theme toggle with persisted user preference.",
-      priority: "Low",
-      estimate: 5,
-      projectId: project.id,
-      sprintId: sprint2.id,
-      stateId: stateBacklog.id,
-      typeId: typeFeature.id,
-      repositoryId: repositoryFrontend.id,
-      reporterId: dave.id,
-      assigneeId: dave.id,
-      reviewerId: null,
-    });
+    // --- Backlog stories (no sprint assigned) ---
+    for (let i = 0; i < 12; i++) {
+      nimbleStories.push(
+        await createStory(nimbleCtx, {
+          sprintId: null,
+          stateId: rand([nimbleStateInfo.states[0], nimbleStateInfo.states[1]]).id,
+        }),
+      );
+    }
 
-    // -------------------------------------------------------------------------
-    // Relations between stories
-    // -------------------------------------------------------------------------
-    const relationBlocks = await db.relation.create({
-      type: "BLOCKS",
-      storyOneId: storyDone.id,
-      storyTwoId: storyLogin.id,
-    });
-    const relationRelates = await db.relation.create({
-      type: "RELATES_TO",
-      storyOneId: storyLogin.id,
-      storyTwoId: storyBug.id,
-    });
-    const relationParent = await db.relation.create({
-      type: "PARENT_OF",
-      storyOneId: storyLogin.id,
-      storyTwoId: storyPassword.id,
-    });
-    const relationDuplicates = await db.relation.create({
-      type: "DUPLICATES",
-      storyOneId: storyDarkMode.id,
-      storyTwoId: storyBoard.id,
-    });
+    await enrichStories(nimbleCtx, nimbleStories);
+    await seedRelations(nimbleStories, 14);
 
-    // -------------------------------------------------------------------------
-    // Acceptance criteria (status enum: Pending | Passed | Failed)
-    // -------------------------------------------------------------------------
-    const acLoginSuccess = await db.acceptanceCriteria.create({
-      title: "Valid credentials succeed",
-      description: "A user with correct email/password receives a session.",
-      status: "Passed",
-      storyId: storyLogin.id,
-    });
-    const acLoginFailure = await db.acceptanceCriteria.create({
-      title: "Invalid credentials rejected",
-      description: "A user with wrong credentials receives a 401.",
-      status: "Pending",
-      storyId: storyLogin.id,
-    });
-    const acLoginLockout = await db.acceptanceCriteria.create({
-      title: "Account lockout after 5 attempts",
-      description: "Repeated failures temporarily lock the account.",
-      status: "Pending",
-      storyId: storyLogin.id,
-    });
-    const acBugFixed = await db.acceptanceCriteria.create({
-      title: "Sessions honor configured window",
-      description: "Sessions no longer expire early.",
-      status: "Failed",
-      storyId: storyBug.id,
-    });
-    const acPasswordEmail = await db.acceptanceCriteria.create({
-      title: "Reset email is sent",
-      description: "Requesting a reset sends an email with a valid token.",
-      status: "Pending",
-      storyId: storyPassword.id,
-    });
-    const acPasswordExpiry = await db.acceptanceCriteria.create({
-      title: "Reset token expires",
-      description: "A reset token is rejected after 30 minutes.",
-      status: "Pending",
-      storyId: storyPassword.id,
-    });
-    const acBoardDrag = await db.acceptanceCriteria.create({
-      title: "Dragging updates state",
-      description: "Dropping a card in a column persists the new state.",
-      status: "Passed",
-      storyId: storyBoard.id,
-    });
-    const acBoardOrder = await db.acceptanceCriteria.create({
-      title: "Card order is preserved",
-      description: "Reordering within a column persists across reloads.",
-      status: "Failed",
-      storyId: storyBoard.id,
-    });
-    const acModelsMigrate = await db.acceptanceCriteria.create({
-      title: "Schema syncs cleanly",
-      description: "All models sync with no foreign-key errors.",
-      status: "Passed",
-      storyId: storyDone.id,
-    });
+    // --- Retrospectives (one per completed sprint) ---
+    const retroSummaries = [
+      "Solid velocity; onboarding docs still thin.",
+      "Hit the sprint goal early — pulled in a stretch story.",
+      "CI flakiness slowed reviews; added retries as a follow-up.",
+    ];
+    for (let i = 0; i < 3; i++) {
+      await db.retrospective.create({
+        agenda: `Review ${nimbleSprintDefs[i].title} outcomes and blockers.`,
+        summary: retroSummaries[i],
+        sprintId: nimbleSprints[i].id,
+      });
+    }
 
-    // -------------------------------------------------------------------------
-    // Comments on STORIES (storyId set, acceptanceCriteriaId null)
-    // -------------------------------------------------------------------------
-    const commentBob = await db.comment.create({
-      content: "Starting on the login endpoint today.",
-      storyId: storyLogin.id,
-      userId: bob.id,
-    });
-    const commentOwner = await db.comment.create({
-      content: "Make sure to cover the invalid-credentials path.",
-      storyId: storyLogin.id,
-      userId: user.id,
-    });
-    const commentCarol = await db.comment.create({
-      content: "Reproduced the bug locally, investigating.",
-      storyId: storyBug.id,
-      userId: carol.id,
-    });
-    const commentDave = await db.comment.create({
-      content: "Drag-and-drop prototype is up on a branch for review.",
-      storyId: storyBoard.id,
-      userId: dave.id,
-    });
-    const commentErin = await db.comment.create({
-      content: "Leaning toward WebSockets — polling is too chatty at scale.",
-      storyId: storySpike.id,
-      userId: erin.id,
-    });
-    const commentFrank = await db.comment.create({
-      content: "Let's pull notifications into Sprint 2 once auth lands.",
-      storyId: storyNotifications.id,
-      userId: frank.id,
-    });
+    // --- Standups across the active sprint's elapsed days ---
+    const activeSprint = nimbleSprints[3];
+    const standupNotes = [
+      "Auth flow in progress; DB scaffolding merged.",
+      "Repository integration underway; no blockers.",
+      "Login endpoint in review; bug repro confirmed.",
+      "Board drag-and-drop merged; polishing edge cases.",
+      "Notifications spike wrapped; recommending WebSockets.",
+      "Burndown on track; wrapping up review items.",
+    ];
+    for (let d = -7; d <= 0; d++) {
+      if (chance(0.75)) {
+        await db.standup.create({
+          agenda: chance(0.5) ? "Daily sync" : null,
+          notes: rand(standupNotes),
+          date: days(d),
+          sprintId: activeSprint.id,
+        });
+      }
+    }
 
-    // -------------------------------------------------------------------------
-    // Comments on ACCEPTANCE CRITERIA (acceptanceCriteriaId set, storyId null)
-    // -------------------------------------------------------------------------
-    const acCommentGrace = await db.comment.create({
-      content: "Verified with a valid account — session cookie is set. 👍",
-      acceptanceCriteriaId: acLoginSuccess.id,
-      userId: grace.id,
-    });
-    const acCommentCarol = await db.comment.create({
-      content: "Still returns 500 instead of 401 for a bad password.",
-      acceptanceCriteriaId: acLoginFailure.id,
-      userId: carol.id,
-    });
-    const acCommentBob = await db.comment.create({
-      content: "Lockout threshold should be configurable, not hard-coded at 5.",
-      acceptanceCriteriaId: acLoginLockout.id,
-      userId: bob.id,
-    });
-    const acCommentGrace2 = await db.comment.create({
-      content: "Confirmed sessions still expire ~5 min early. Marking failed.",
-      acceptanceCriteriaId: acBugFixed.id,
-      userId: grace.id,
-    });
-    const acCommentErin = await db.comment.create({
-      content: "Token email lands in spam on Gmail — need SPF/DKIM set up.",
-      acceptanceCriteriaId: acPasswordEmail.id,
-      userId: erin.id,
-    });
-    const acCommentDave = await db.comment.create({
-      content: "Order isn't preserved after reload — index isn't persisted.",
-      acceptanceCriteriaId: acBoardOrder.id,
-      userId: dave.id,
-    });
-    const acCommentUser = await db.comment.create({
-      content: "Nice, schema sync is green in CI now.",
-      acceptanceCriteriaId: acModelsMigrate.id,
-      userId: user.id,
-    });
-
-    // -------------------------------------------------------------------------
-    // Activities (changes stored as JSON)
-    // -------------------------------------------------------------------------
-    const activityCreated = await db.activity.create({
-      action: "created",
-      changes: { title: "Implement user login" },
-      userId: user.id,
-      storyId: storyLogin.id,
-    });
-    const activityMoved = await db.activity.create({
-      action: "updated",
-      changes: { stateId: [stateBacklog.id, stateInProgress.id] },
-      userId: bob.id,
-      storyId: storyLogin.id,
-    });
-    const activityAssigned = await db.activity.create({
-      action: "updated",
-      changes: { assigneeId: [null, dave.id] },
-      userId: frank.id,
-      storyId: storyBoard.id,
-    });
-    const activityDone = await db.activity.create({
-      action: "updated",
-      changes: { stateId: [stateReview.id, stateDone.id] },
-      userId: user.id,
-      storyId: storyDone.id,
-    });
-
-    // -------------------------------------------------------------------------
-    // Project 2: Atlas (Test User is a member/manager)
-    // -------------------------------------------------------------------------
-    const project2 = await db.project.create({
+    // =========================================================================
+    // Project 2: Atlas — Test User is a manager. Smaller, but still with a
+    // completed burndown and an in-progress sprint.
+    // =========================================================================
+    const atlas = await db.project.create({
       title: "Atlas",
       description: "Internal analytics and reporting platform.",
       deadline: days(90),
     });
-    const member2Owner = await db.projectMember.create({
-      isManager: true,
-      userId: user.id,
-      projectId: project2.id,
-    });
-    const member2Bob = await db.projectMember.create({
-      isManager: false,
-      userId: bob.id,
-      projectId: project2.id,
-    });
-    const member2Erin = await db.projectMember.create({
-      isManager: false,
-      userId: erin.id,
-      projectId: project2.id,
-    });
-    const member2Isaiah = await db.projectMember.create({
-      isManager: false,
-      userId: isaiah.id,
-      projectId: project2.id,
-    });
+    const atlasMembers = await addMembers(atlas, [
+      [admin, true],
+      [bob, false],
+      [erin, false],
+      [isaiah, false],
+      [users["ivan@example.com"], false],
+      [users["oscar@example.com"], false],
+    ]);
+    const atlasRepos = [
+      await db.repository.create({
+        githubId: "555001",
+        name: "atlas-api",
+        projectId: atlas.id,
+      }),
+    ];
+    const atlasStateInfo = await buildStates(atlas, ["To Do", "Doing", "Done"]);
+    const atlasTypes = await buildTypes(atlas, ["Feature", "Bug", "Chore"]);
+    const atlasCtx = {
+      project: atlas,
+      members: atlasMembers,
+      repos: atlasRepos,
+      typeByName: atlasTypes,
+      states: atlasStateInfo.states,
+      openStates: atlasStateInfo.openStates,
+      doneState: atlasStateInfo.doneState,
+    };
 
-    const p2StateTodo = await db.storyState.create({
-      name: "To Do",
-      order: 1,
-      projectId: project2.id,
-    });
-    const p2StateDoing = await db.storyState.create({
-      name: "Doing",
-      order: 2,
-      projectId: project2.id,
-    });
-    const p2StateDone = await db.storyState.create({
-      name: "Done",
-      order: 3,
-      projectId: project2.id,
-    });
-    const p2TypeFeature = await db.storyType.create({
-      name: "Feature",
-      projectId: project2.id,
-    });
-    const p2TypeBug = await db.storyType.create({
-      name: "Bug",
-      projectId: project2.id,
-    });
-    const p2Sprint = await db.sprint.create({
-      title: "Atlas Sprint 1",
-      startDate: days(0),
-      endDate: days(14),
-      status: "Active",
-      projectId: project2.id,
-    });
+    const atlasSprintDefs = [
+      { title: "Atlas Sprint 1", start: -30, end: -16, status: "Completed", total: 9, completed: 9 },
+      { title: "Atlas Sprint 2", start: -6, end: 8, status: "Active", total: 10, completed: 5, completionEnd: 0 },
+    ];
+    const atlasStories = [];
+    for (const def of atlasSprintDefs) {
+      const sprint = await db.sprint.create({
+        title: def.title,
+        goal: `Deliver committed scope for ${def.title}.`,
+        startDate: days(def.start),
+        endDate: days(def.end),
+        status: def.status,
+        projectId: atlas.id,
+      });
+      const stories = await seedSprint(atlasCtx, {
+        sprint,
+        startOffset: def.start,
+        endOffset: def.end,
+        total: def.total,
+        completedCount: def.completed,
+        completionEnd: def.completionEnd ?? def.end,
+      });
+      atlasStories.push(...stories);
+    }
+    for (let i = 0; i < 6; i++) {
+      atlasStories.push(
+        await createStory(atlasCtx, {
+          sprintId: null,
+          stateId: atlasStateInfo.states[0].id,
+        }),
+      );
+    }
+    await enrichStories(atlasCtx, atlasStories);
+    await seedRelations(atlasStories, 5);
 
-    const p2Story1 = await db.story.create({
-      title: "Build reporting dashboard",
-      description: "Aggregate metrics into a single dashboard view.",
-      priority: "High",
-      estimate: 8,
-      projectId: project2.id,
-      sprintId: p2Sprint.id,
-      stateId: p2StateDoing.id,
-      typeId: p2TypeFeature.id,
-      repositoryId: null,
-      reporterId: user.id,
-      assigneeId: erin.id,
-      reviewerId: bob.id,
-    });
-    const p2Story2 = await db.story.create({
-      title: "Fix CSV export encoding",
-      description: "Exports mangle UTF-8 characters in some locales.",
-      priority: "Medium",
-      estimate: 3,
-      projectId: project2.id,
-      sprintId: p2Sprint.id,
-      stateId: p2StateTodo.id,
-      typeId: p2TypeBug.id,
-      repositoryId: null,
-      reporterId: bob.id,
-      assigneeId: null,
-      reviewerId: null,
-    });
-
-    const p2Ac1 = await db.acceptanceCriteria.create({
-      title: "Dashboard loads under 2s",
-      description: "Initial dashboard render completes within 2 seconds.",
-      status: "Pending",
-      storyId: p2Story1.id,
-    });
-    const p2AcComment = await db.comment.create({
-      content: "Currently ~4s with real data — need to add caching.",
-      acceptanceCriteriaId: p2Ac1.id,
-      userId: erin.id,
-    });
-    const p2StoryComment = await db.comment.create({
-      content: "Blocked on the metrics rollup job landing first.",
-      storyId: p2Story1.id,
-      userId: user.id,
-    });
-
-    // -------------------------------------------------------------------------
-    // Project 3: Beacon (Test User is NOT a member)
-    // -------------------------------------------------------------------------
-    const project3 = await db.project.create({
+    // =========================================================================
+    // Project 3: Beacon — Test User is NOT a member (access-control demo).
+    // =========================================================================
+    const beacon = await db.project.create({
       title: "Beacon",
       description: "Customer-facing notifications service.",
       deadline: days(45),
     });
-    const member3Bob = await db.projectMember.create({
-      isManager: true,
-      userId: bob.id,
-      projectId: project3.id,
-    });
-    const member3Carol = await db.projectMember.create({
-      isManager: false,
-      userId: carol.id,
-      projectId: project3.id,
-    });
-    const member3Grace = await db.projectMember.create({
-      isManager: false,
-      userId: grace.id,
-      projectId: project3.id,
-    });
-    const member3Isaiah = await db.projectMember.create({
-      isManager: false,
-      userId: isaiah.id,
-      projectId: project3.id,
-    });
+    const beaconMembers = await addMembers(beacon, [
+      [bob, true],
+      [carol, false],
+      [grace, false],
+      [isaiah, false],
+      [users["mallory@example.com"], false],
+    ]);
+    const beaconStateInfo = await buildStates(beacon, [
+      "Not Started",
+      "Building",
+      "Shipped",
+    ]);
+    const beaconTypes = await buildTypes(beacon, ["Feature", "Bug"]);
+    const beaconCtx = {
+      project: beacon,
+      members: beaconMembers,
+      repos: [],
+      typeByName: beaconTypes,
+      states: beaconStateInfo.states,
+      openStates: beaconStateInfo.openStates,
+      doneState: beaconStateInfo.doneState,
+    };
 
-    const p3StateBacklog = await db.storyState.create({
-      name: "Not Started",
-      order: 1,
-      projectId: project3.id,
-    });
-    const p3StateDone = await db.storyState.create({
-      name: "Shipped",
-      order: 2,
-      projectId: project3.id,
-    });
-    const p3Type = await db.storyType.create({
-      name: "Feature",
-      projectId: project3.id,
-    });
-    const p3Story = await db.story.create({
-      title: "SMS delivery provider integration",
-      description: "Integrate a third-party SMS gateway for notifications.",
-      priority: "High",
-      estimate: 5,
-      projectId: project3.id,
-      sprintId: null,
-      stateId: p3StateBacklog.id,
-      typeId: p3Type.id,
-      repositoryId: null,
-      reporterId: bob.id,
-      assigneeId: carol.id,
-      reviewerId: grace.id,
-    });
-    const p3Ac = await db.acceptanceCriteria.create({
-      title: "Failed sends are retried",
-      description: "A failed SMS is retried up to 3 times with backoff.",
-      status: "Pending",
-      storyId: p3Story.id,
-    });
-    const p3AcComment = await db.comment.create({
-      content: "Provider webhook only reports final status, not each retry.",
-      acceptanceCriteriaId: p3Ac.id,
-      userId: grace.id,
-    });
+    const beaconSprintDefs = [
+      { title: "Beacon Sprint 1", start: -20, end: -6, status: "Completed", total: 8, completed: 8 },
+      { title: "Beacon Sprint 2", start: -3, end: 11, status: "Active", total: 8, completed: 2, completionEnd: 0 },
+    ];
+    const beaconStories = [];
+    for (const def of beaconSprintDefs) {
+      const sprint = await db.sprint.create({
+        title: def.title,
+        goal: `Deliver committed scope for ${def.title}.`,
+        startDate: days(def.start),
+        endDate: days(def.end),
+        status: def.status,
+        projectId: beacon.id,
+      });
+      const stories = await seedSprint(beaconCtx, {
+        sprint,
+        startOffset: def.start,
+        endOffset: def.end,
+        total: def.total,
+        completedCount: def.completed,
+        completionEnd: def.completionEnd ?? def.end,
+      });
+      beaconStories.push(...stories);
+    }
+    for (let i = 0; i < 5; i++) {
+      beaconStories.push(
+        await createStory(beaconCtx, {
+          sprintId: null,
+          stateId: beaconStateInfo.states[0].id,
+        }),
+      );
+    }
+    await enrichStories(beaconCtx, beaconStories);
+    await seedRelations(beaconStories, 4);
 
+    const totalStories =
+      nimbleStories.length + atlasStories.length + beaconStories.length;
+    console.log(
+      `Seeded ${allUsers.length} users, 3 projects, and ${totalStories} stories.`,
+    );
+    console.log("Init complete.");
     process.exit(0);
   } catch (error) {
     console.error("Init/verify failed:", error);

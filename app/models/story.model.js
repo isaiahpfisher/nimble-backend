@@ -16,6 +16,10 @@ module.exports = (sequelize, Sequelize) => {
       type: Sequelize.INTEGER,
       allowNull: true,
     },
+    completedAt: {
+      type: Sequelize.DATE,
+      allowNull: true,
+    },
   });
 
   return Story;
