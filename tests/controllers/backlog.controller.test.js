@@ -34,7 +34,7 @@ beforeEach(() => {
 });
 
 describe("findAllForProject", () => {
-  it("sends stories scoped to the project", async () => {
+  it("sends stories scoped to the project with no sprint assigned", async () => {
     const stories = [{ id: 1 }];
     Story.findAll.mockResolvedValue(stories);
     const res = mockRes();
@@ -42,7 +42,9 @@ describe("findAllForProject", () => {
     await controller.findAllForProject({ params: { id: "1" } }, res);
 
     expect(Story.findAll).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { projectId: "1" } }),
+      expect.objectContaining({
+        where: { projectId: "1", sprintId: null },
+      }),
     );
     expect(res.send).toHaveBeenCalledWith(stories);
     expect(res.status).not.toHaveBeenCalled();
@@ -64,7 +66,7 @@ describe("findAllForProject", () => {
     });
   });
 
-  it("eager-loads type, assignee, and sprint", async () => {
+  it("eager-loads type and assignee, and does not load sprint", async () => {
     Story.findAll.mockResolvedValue([]);
     const res = mockRes();
 
@@ -73,11 +75,10 @@ describe("findAllForProject", () => {
     const { include } = Story.findAll.mock.calls[0][0];
 
     expect(include).toEqual(
-      expect.arrayContaining([
-        { model: db.storyType, as: "type" },
-        { model: db.sprint, as: "sprint" },
-      ]),
+      expect.arrayContaining([{ model: db.storyType, as: "type" }]),
     );
+
+    expect(include.some((i) => i.model === db.sprint)).toBe(false);
 
     const assigneeInclude = include.find(
       (i) => i.model === db.user && i.as === "assignee",
@@ -110,17 +111,14 @@ describe("assignSprint", () => {
     };
   }
 
-  it("assigns the sprint and sends the updated story", async () => {
+  it("assigns the sprint and sends a success message", async () => {
     const story = {
       id: 7,
       projectId: "1",
       update: jest.fn().mockResolvedValue(undefined),
     };
-    const updated = { id: 7, sprint: { id: 4 } };
 
-    Story.findByPk
-      .mockResolvedValueOnce(story)
-      .mockResolvedValueOnce(updated);
+    Story.findByPk.mockResolvedValue(story);
     Sprint.findByPk.mockResolvedValue({ id: 4, projectId: "1" });
 
     const res = mockRes();
@@ -128,41 +126,12 @@ describe("assignSprint", () => {
     await controller.assignSprint(req(), res);
 
     expect(story.update).toHaveBeenCalledWith({ sprintId: 4 });
-    expect(Story.findByPk).toHaveBeenNthCalledWith(1, "7");
-    expect(Story.findByPk).toHaveBeenNthCalledWith(
-      2,
-      "7",
-      expect.any(Object),
-    );
-    expect(res.send).toHaveBeenCalledWith(updated);
+    expect(Story.findByPk).toHaveBeenCalledTimes(1);
+    expect(Story.findByPk).toHaveBeenCalledWith("7");
+    expect(res.send).toHaveBeenCalledWith({
+      message: "Story assigned to sprint successfully!",
+    });
     expect(res.status).not.toHaveBeenCalled();
-  });
-
-  it("eager-loads state, type, assignee, and sprint on the response", async () => {
-    const story = {
-      id: 7,
-      projectId: "1",
-      update: jest.fn().mockResolvedValue(undefined),
-    };
-
-    Story.findByPk
-      .mockResolvedValueOnce(story)
-      .mockResolvedValueOnce({ id: 7 });
-    Sprint.findByPk.mockResolvedValue({ id: 4, projectId: "1" });
-
-    const res = mockRes();
-
-    await controller.assignSprint(req(), res);
-
-    const { include } = Story.findByPk.mock.calls[1][1];
-
-    expect(include).toEqual(
-      expect.arrayContaining([
-        { model: db.storyState, as: "state" },
-        { model: db.storyType, as: "type" },
-        { model: db.sprint, as: "sprint" },
-      ]),
-    );
   });
 
   it("responds 400 when sprintId is missing", async () => {
