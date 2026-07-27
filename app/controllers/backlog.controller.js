@@ -7,7 +7,7 @@ exports.findAllForProject = async (req, res) => {
   const projectId = req.params.id;
   try {
     const stories = await Story.findAll({
-      where: { projectId: projectId },
+      where: { projectId: projectId, sprintId: null },
       include: [
         {
           model: db.storyState,
@@ -20,7 +20,6 @@ exports.findAllForProject = async (req, res) => {
           as: "assignee",
           attributes: ["id", "firstName", "lastName", "email"],
         },
-        { model: db.sprint, as: "sprint" },
       ],
     });
 
@@ -58,20 +57,7 @@ exports.assignSprint = async (req, res) => {
 
     await story.update({ sprintId: sprint.id });
 
-    const data = await Story.findByPk(storyId, {
-      include: [
-        { model: db.storyState, as: "state" },
-        { model: db.storyType, as: "type" },
-        {
-          model: db.user,
-          as: "assignee",
-          attributes: ["id", "firstName", "lastName", "email"],
-        },
-        { model: db.sprint, as: "sprint" },
-      ],
-    });
-
-    res.send(data);
+    res.send({ message: "Story assigned to sprint successfully!" });
   } catch (err) {
     res.status(err.statusCode || 500).send({
       message: err.message || "Error assigning Story to Sprint.",
