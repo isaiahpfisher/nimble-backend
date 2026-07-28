@@ -2,7 +2,6 @@ const db = require("../models");
 const Story = db.story;
 const Sprint = db.sprint;
 const { httpError } = require("../utils/httpUtils");
-
 exports.findAllForProject = async (req, res) => {
   const projectId = req.params.id;
   try {
@@ -10,9 +9,7 @@ exports.findAllForProject = async (req, res) => {
       where: { projectId: projectId, sprintId: null },
       include: [
         {
-          model: db.storyState,
-          as: "state",
-          where: { name: "Not Started" },
+         model: db.storyState, as: "state",
         },
         { model: db.storyType, as: "type" },
         {

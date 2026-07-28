@@ -50,7 +50,7 @@ describe("findAllForProject", () => {
     expect(res.status).not.toHaveBeenCalled();
   });
 
-  it("filters to stories in the Not Started state", async () => {
+  it("does not filter by state, since states are user-customizable", async () => {
     Story.findAll.mockResolvedValue([]);
     const res = mockRes();
 
@@ -59,11 +59,7 @@ describe("findAllForProject", () => {
     const { include } = Story.findAll.mock.calls[0][0];
     const stateInclude = include.find((i) => i.model === db.storyState);
 
-    expect(stateInclude).toEqual({
-      model: db.storyState,
-      as: "state",
-      where: { name: "Not Started" },
-    });
+    expect(stateInclude).toEqual({ model: db.storyState, as: "state" });
   });
 
   it("eager-loads type and assignee, and does not load sprint", async () => {
