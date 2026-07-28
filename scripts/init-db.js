@@ -696,29 +696,43 @@ const run = async () => {
   try {
     console.log(`Syncing database${wipe ? " (force=true)" : ""}...`);
     if (wipe) {
-      // MySQL only: disable FK checks so force:true can drop tables regardless
-      // of the referential order (users is referenced by stories, sessions,
-      // etc.). Postgres needs none of this — its force:true emits
-      // DROP TABLE ... CASCADE, and `connection` there is a pg.Client with no
-      // .promise() and no FOREIGN_KEY_CHECKS to set.
-      //
-      // FOREIGN_KEY_CHECKS is a per-connection setting, and Sequelize runs on a
-      // connection pool — a single SET only affects one pooled connection, but
-      // force:true may issue its DROP TABLEs on others. Use an afterConnect hook
-      // so every connection the pool opens during sync has checks disabled.
-      const isMysql = db.sequelize.getDialect() === "mysql";
-      const disableFkChecks = async (connection) => {
-        await connection.promise().query("SET FOREIGN_KEY_CHECKS = 0");
-      };
-      if (isMysql) {
+      const dialect = db.sequelize.getDialect();
+
+      if (dialect === "postgres") {
+        // Don't use sync({force:true}) here. Sequelize's drop() first reads every
+        // FK constraint out of information_schema and removes them with
+        // Promise.all before dropping any table. If that listing disagrees with
+        // reality — a name reported twice, or one already gone — the parallel
+        // ALTER TABLE ... DROP CONSTRAINT calls race and the loser fails with
+        // 42704 "constraint ... does not exist", aborting the whole wipe. A
+        // schema that has accumulated churn from repeated sync({alter:true})
+        // (which server.js runs on every boot) is where this shows up.
+        //
+        // Dropping the schema outright skips that path entirely and is a
+        // stricter wipe anyway: it clears tables, sequences, enums, and
+        // constraints regardless of what state they were left in.
+        await db.sequelize.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
+        await db.sequelize.sync();
+      } else if (dialect === "mysql") {
+        // MySQL: disable FK checks so the drops can run regardless of
+        // referential order (users is referenced by stories, sessions, etc.).
+        //
+        // FOREIGN_KEY_CHECKS is a per-connection setting, and Sequelize runs on
+        // a connection pool — a single SET only affects one pooled connection,
+        // but force:true may issue its DROP TABLEs on others. Use an
+        // afterConnect hook so every connection the pool opens during sync has
+        // checks disabled.
+        const disableFkChecks = async (connection) => {
+          await connection.promise().query("SET FOREIGN_KEY_CHECKS = 0");
+        };
         db.sequelize.addHook("afterConnect", "disableFkChecks", disableFkChecks);
-      }
-      try {
-        await db.sequelize.sync({ force: true });
-      } finally {
-        if (isMysql) {
+        try {
+          await db.sequelize.sync({ force: true });
+        } finally {
           db.sequelize.removeHook("afterConnect", "disableFkChecks");
         }
+      } else {
+        await db.sequelize.sync({ force: true });
       }
     } else {
       await db.sequelize.sync();
