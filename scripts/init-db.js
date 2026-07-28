@@ -809,7 +809,9 @@ const run = async () => {
       const members = [];
       for (const [user, isManager] of entries) {
         await db.projectMember.create({
-          isManager,
+          // Stored as a varchar "1"/"0" — a raw boolean stringifies to "true"
+          // on Postgres but coerces to "1" on MySQL, so normalize it here.
+          isManager: isManager ? "1" : "0",
           userId: user.id,
           projectId: project.id,
         });
