@@ -3,7 +3,7 @@ module.exports = (sequelize, Sequelize) => {
     isManager: {
       type: Sequelize.STRING,
       allowNull: false,
-      defaultValue: false,
+      defaultValue: "0",
     },
   });
 

@@ -126,7 +126,7 @@ exports.create = async (req, res) => {
     await ProjectMember.create({
       userId,
       projectId: data.id,
-      isManager: true,
+      isManager: "1",
     });
 
     await StoryType.bulkCreate(
@@ -180,7 +180,7 @@ exports.adminCreate = async (req, res) => {
     await ProjectMember.create({
       userId: manager.id,
       projectId: data.id,
-      isManager: true,
+      isManager: "1",
     });
 
     await StoryType.bulkCreate(

@@ -196,7 +196,7 @@ describe("create", () => {
     expect(ProjectMember.create).toHaveBeenCalledWith({
       userId: 42,
       projectId: 5,
-      isManager: true,
+      isManager: "1",
     });
     // The new project is seeded with the default story types and states,
     // each scoped to the project that was just created.
@@ -293,7 +293,7 @@ describe("adminCreate", () => {
     expect(ProjectMember.create).toHaveBeenCalledWith({
       userId: 7,
       projectId: 5,
-      isManager: true,
+      isManager: "1",
     });
     const seededTypes = db.storyType.bulkCreate.mock.calls[0][0];
     expect(seededTypes.every((t) => t.projectId === 5)).toBe(true);
