@@ -230,20 +230,20 @@ const run = async () => {
     // --- Sprints ---
     const sprint0 = await db.sprint.create({
       name: "Sprint 0 (completed)",
-      start: days(-28),
-      end: days(-14),
+      startDate: days(-28),
+      endDate: days(-14),
       projectId: project.id,
     });
     const sprint = await db.sprint.create({
       name: "Sprint 1",
-      start: days(-1),
-      end: days(13),
+      startDate: days(-1),
+      endDate: days(13),
       projectId: project.id,
     });
     const sprint2 = await db.sprint.create({
       name: "Sprint 2 (planned)",
-      start: days(14),
-      end: days(28),
+      startDate: days(14),
+      endDate: days(28),
       projectId: project.id,
     });
 
@@ -653,8 +653,8 @@ const run = async () => {
     });
     const p2Sprint = await db.sprint.create({
       name: "Atlas Sprint 1",
-      start: days(0),
-      end: days(14),
+      startDate: days(0),
+      endDate: days(14),
       projectId: project2.id,
     });
 
