@@ -9,12 +9,24 @@ jest.mock("../../app/models", () => ({
   story: {
     findOne: jest.fn(),
   },
+  // every mutation looks the acting user up to name them in the history
+  user: {
+    findByPk: jest.fn(),
+  },
   Sequelize: { Op: {} },
+}));
+
+// The activity history is asserted in acceptanceCriteria.activity.test.js;
+// here it is stubbed so these tests only see the controller's own behaviour.
+jest.mock("../../app/utils/activity", () => ({
+  ...jest.requireActual("../../app/utils/activity"),
+  recordActivity: jest.fn().mockResolvedValue(undefined),
 }));
 
 const db = require("../../app/models");
 const AcceptanceCriteria = db.acceptanceCriteria;
 const Story = db.story;
+const User = db.user;
 const controller = require("../../app/controllers/acceptanceCriteria.controller");
 
 // The controller calls a bare `authenticate(...)`, which resolves to the global
@@ -43,6 +55,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   authenticate = jest.fn().mockResolvedValue({ userId: 42 });
   global.authenticate = authenticate;
+  User.findByPk.mockResolvedValue({ id: 42, firstName: "Ada", lastName: "Lovelace" });
 });
 
 afterEach(() => {

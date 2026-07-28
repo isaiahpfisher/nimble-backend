@@ -94,9 +94,7 @@ exports.createRecurring = async (req, res) => {
 
     for (let i = 0; i < req.body.recurrenceCount; i++) {
       const sprintStart = addDays(start, step * i);
-      const sprintEnd = new Date(
-        sprintStart.getTime() + sprintLength
-      );
+      const sprintEnd = new Date(sprintStart.getTime() + sprintLength);
 
       sprints.push({
         title: `${req.body.title} ${i + 1}`,
@@ -135,8 +133,7 @@ exports.findAllForProject = async (req, res) => {
     res.send(data);
   } catch (err) {
     res.status(err.statusCode || 500).send({
-      message:
-        err.message || "Error retrieving Sprints for project.",
+      message: err.message || "Error retrieving Sprints for project.",
     });
   }
 };
@@ -147,20 +144,27 @@ exports.findOne = async (req, res) => {
 
     const id = req.params.id;
 
-    const data = await Sprint.findByPk(id);
+    const data = await Sprint.findByPk(id, {
+      include: [
+        {
+          model: db.project,
+          as: "project",
+        },
+        {
+          model: db.story,
+          as: "story",
+        },
+      ],
+    });
 
     if (data) {
       res.send(data);
     } else {
-      throw httpError(
-        `Cannot find Sprint with id = ${id}.`,
-        404
-      );
+      throw httpError(`Cannot find Sprint with id = ${id}.`, 404);
     }
   } catch (err) {
     res.status(err.statusCode || 500).send({
-      message:
-        err.message || "Error retrieving Sprint.",
+      message: err.message || "Error retrieving Sprint.",
     });
   }
 };
@@ -172,10 +176,7 @@ exports.update = async (req, res) => {
     const sprint = await Sprint.findByPk(req.params.id);
 
     if (!sprint) {
-      throw httpError(
-        `Cannot find Sprint with id = ${req.params.id}.`,
-        404
-      );
+      throw httpError(`Cannot find Sprint with id = ${req.params.id}.`, 404);
     }
 
     await sprint.update(req.body);
@@ -195,10 +196,7 @@ exports.delete = async (req, res) => {
     const sprint = await Sprint.findByPk(req.params.id);
 
     if (!sprint) {
-      throw httpError(
-        `Cannot find Sprint with id = ${req.params.id}.`,
-        404
-      );
+      throw httpError(`Cannot find Sprint with id = ${req.params.id}.`, 404);
     }
 
     await sprint.destroy();

@@ -9,6 +9,10 @@ jest.mock("../../app/models", () => ({
     bulkCreate: jest.fn(),
     findByPk: jest.fn(),
   },
+  // Sentinels for the associations findOne eager-loads; the controller only
+  // passes these through to Sequelize, so identity is all the tests need.
+  project: { name: "project" },
+  story: { name: "story" },
 }));
 
 jest.mock("../../app/authentication/authentication", () => ({
@@ -272,7 +276,12 @@ describe("Sprint controller", () => {
 
       await controller.findOne(req, res);
 
-      expect(Sprint.findByPk).toHaveBeenCalledWith("1");
+      expect(Sprint.findByPk).toHaveBeenCalledWith("1", {
+        include: [
+          { model: db.project, as: "project" },
+          { model: db.story, as: "story" },
+        ],
+      });
       expect(res.send).toHaveBeenCalledWith(sprint);
     });
 

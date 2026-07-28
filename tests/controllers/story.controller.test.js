@@ -15,7 +15,9 @@ jest.mock("../../app/models", () => ({
   user: { name: "user", findByPk: jest.fn() },
   // Sentinels for the associations the finders eager-load; the controller only
   // passes these through to Sequelize, so identity is all the tests need.
-  storyState: { name: "storyState" },
+  // create() resolves the new story's state for the activity metadata; `name`
+  // still works as an association sentinel in the eager-load assertions.
+  storyState: { name: "storyState", findByPk: jest.fn() },
   storyType: { name: "storyType" },
   repository: { name: "repository" },
   sprint: { name: "sprint" },
@@ -33,10 +35,18 @@ jest.mock("../../app/utils/email", () => ({
   storyUrl: jest.fn(() => "http://example.test/story"),
 }));
 
+// The activity history is asserted in story.activity.test.js; here it is
+// stubbed so these tests only see the controller's own behaviour.
+jest.mock("../../app/utils/activity", () => ({
+  ...jest.requireActual("../../app/utils/activity"),
+  recordActivity: jest.fn().mockResolvedValue(undefined),
+}));
+
 const db = require("../../app/models");
 const Story = db.story;
 const Project = db.project;
 const User = db.user;
+const StoryState = db.storyState;
 const email = require("../../app/utils/email");
 const controller = require("../../app/controllers/story.controller");
 
@@ -74,6 +84,7 @@ beforeEach(() => {
   User.findByPk.mockImplementation((id) =>
     Promise.resolve({ id, firstName: "User", lastName: String(id), email: `${id}@test.dev` }),
   );
+  StoryState.findByPk.mockImplementation((id) => Promise.resolve({ id, name: `State ${id}` }));
 });
 
 afterEach(() => {
@@ -375,6 +386,23 @@ describe("update", () => {
     expect(res.status).not.toHaveBeenCalled();
   });
 
+  it("eager-loads the project's completed state", async () => {
+    const story = { id: 7, update: jest.fn().mockResolvedValue(undefined) };
+    Story.findByPk.mockResolvedValue(story);
+    const res = mockRes();
+
+    await controller.update({ params: { storyId: "7" }, body: storyBody() }, res);
+
+    expect(Story.findByPk).toHaveBeenCalledWith("7", {
+      include: {
+        model: db.project,
+        as: "project",
+        attributes: ["id"],
+        include: { model: db.storyState, as: "completedState" },
+      },
+    });
+  });
+
   it("does not let update reassign the story to another project", async () => {
     const story = { id: 7, update: jest.fn().mockResolvedValue(undefined) };
     Story.findByPk.mockResolvedValue(story);
@@ -528,6 +556,87 @@ describe("update", () => {
 
     expect(email.notifyAssignedUser).not.toHaveBeenCalled();
     expect(email.notifyReviewerUser).not.toHaveBeenCalled();
+  });
+
+  it("stamps completedAt when moved into the project's completed state", async () => {
+    const story = {
+      id: 7,
+      stateId: 1,
+      project: { id: 3, completedState: { id: 9 } },
+      update: jest.fn().mockResolvedValue(undefined),
+    };
+    Story.findByPk.mockResolvedValue(story);
+    const res = mockRes();
+
+    await controller.update(
+      { params: { storyId: "7" }, body: storyBody({ stateId: 9 }) },
+      res,
+    );
+
+    expect(story.update).toHaveBeenCalledWith(
+      expect.objectContaining({ completedAt: expect.any(Date) }),
+    );
+  });
+
+  it("does not stamp completedAt when the state is unchanged", async () => {
+    const story = {
+      id: 7,
+      stateId: 9,
+      project: { id: 3, completedState: { id: 9 } },
+      update: jest.fn().mockResolvedValue(undefined),
+    };
+    Story.findByPk.mockResolvedValue(story);
+    const res = mockRes();
+
+    await controller.update(
+      { params: { storyId: "7" }, body: storyBody({ stateId: 9 }) },
+      res,
+    );
+
+    expect(story.update).toHaveBeenCalledWith(
+      expect.not.objectContaining({ completedAt: expect.anything() }),
+    );
+  });
+
+  it("does not stamp completedAt when moved into a non-completed state", async () => {
+    const story = {
+      id: 7,
+      stateId: 1,
+      project: { id: 3, completedState: { id: 9 } },
+      update: jest.fn().mockResolvedValue(undefined),
+    };
+    Story.findByPk.mockResolvedValue(story);
+    const res = mockRes();
+
+    await controller.update(
+      { params: { storyId: "7" }, body: storyBody({ stateId: 2 }) },
+      res,
+    );
+
+    expect(story.update).toHaveBeenCalledWith(
+      expect.not.objectContaining({ completedAt: expect.anything() }),
+    );
+  });
+
+  it("does not crash when the project has no completed state configured", async () => {
+    const story = {
+      id: 7,
+      stateId: 1,
+      project: { id: 3, completedState: null },
+      update: jest.fn().mockResolvedValue(undefined),
+    };
+    Story.findByPk.mockResolvedValue(story);
+    const res = mockRes();
+
+    await controller.update(
+      { params: { storyId: "7" }, body: storyBody({ stateId: 9 }) },
+      res,
+    );
+
+    expect(res.status).not.toHaveBeenCalled();
+    expect(story.update).toHaveBeenCalledWith(
+      expect.not.objectContaining({ completedAt: expect.anything() }),
+    );
   });
 });
 

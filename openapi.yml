@@ -9,15 +9,32 @@ info:
 
     ## Authentication
 
-    Two authentication schemes are used:
+    Three ways to obtain or present credentials:
 
     - **Basic auth** (`Authorization: Basic <base64(email:password)>`) is used
       only by `POST /login` to exchange credentials for a session token.
+    - **GitHub OAuth** — `POST /github/login` exchanges a GitHub authorization
+      code for the same session token, creating the user on first login.
     - **Bearer token** (`Authorization: Bearer <token>`) is used by all
       protected endpoints. The token is the encrypted session id returned by
-      `POST /login` or `POST /users`.
+      `POST /login`, `POST /github/login` or `POST /users`.
 
     Tokens expire 24 hours after they are issued.
+
+
+    ## Error responses
+
+    Unless noted otherwise, every non-2xx response is a JSON object with a
+    single `message` string. Handlers fall back to `500` when no explicit
+    status code was set, so a malformed request can surface as a `500`.
+
+
+    ## A note on authorization
+
+    Endpoints marked with `bearerAuth` only verify that the caller holds a
+    valid, unexpired session. With few exceptions (comment edit/delete, which
+    check ownership) there is **no** check that the caller is a member of the
+    project being modified.
 servers:
   - url: http://localhost:3200/nimbleapi
     description: Local development server (default PORT 3200)
@@ -28,12 +45,29 @@ tags:
     description: User management
   - name: Projects
     description: Project management
+  - name: Project Members
+    description: Project membership
+  - name: Story States
+    description: Per-project workflow states
+  - name: Story Types
+    description: Per-project story types
+  - name: Sprints
+    description: Sprint planning, including recurring sprints
+  - name: Stories
+    description: Stories and their relations
+  - name: Acceptance Criteria
+    description: Acceptance criteria on a story
+  - name: Comments
+    description: Comments on stories and acceptance criteria
+  - name: Activity
+    description: Activity history
   - name: Reference / Read-only
     description: >
-      Collection endpoints that return all records for a given resource.
-      These are currently read-only list endpoints.
+      Unscoped collection endpoints that dump every row of a table. Unused by
+      the app itself; handy for debugging.
 
 paths:
+  # ---------------------------------------------------------------- Auth ----
   /login:
     post:
       tags: [Auth]
@@ -49,19 +83,20 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AuthResponse"
+                type: object
+                properties:
+                  id: { type: integer }
+                  email: { type: string, format: email }
+                  firstName: { type: string }
+                  lastName: { type: string }
+                  isAdmin: { type: boolean }
+                  token:
+                    type: string
+                    description: Bearer token for the Authorization header.
         "401":
           description: Invalid password, user not found, or missing credentials
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
         "500":
           description: Error creating the session
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
   /logout:
     post:
@@ -69,54 +104,108 @@ paths:
       summary: Log out
       description: >
         Destroys the session associated with the supplied bearer token.
-        Responds with no body.
+        The handler never calls `res.send`, so the request hangs until the
+        client times out; nothing is returned.
       security:
         - bearerAuth: []
       responses:
-        "200":
-          description: Logout processed (no content returned)
+        default:
+          description: No response is sent.
 
+  /github/login:
+    post:
+      tags: [Auth]
+      summary: Log in with a GitHub OAuth code
+      description: >
+        Exchanges a GitHub authorization code for an access token, looks up the
+        GitHub profile, and finds or creates the matching Nimble user by
+        `githubId`. Returns the same payload as `POST /login`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+                  description: Authorization code from the GitHub OAuth redirect.
+      responses:
+        "200":
+          description: Login succeeded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer }
+                  email: { type: string, format: email, nullable: true }
+                  firstName: { type: string }
+                  lastName: { type: string }
+                  isAdmin: { type: boolean }
+                  token: { type: string }
+        "400":
+          description: Missing GitHub code
+        "401":
+          description: GitHub authorization failed
+        "403":
+          description: Unable to verify the GitHub account
+        "500":
+          description: Error during GitHub authentication
+
+  # --------------------------------------------------------------- Users ----
   /users:
     post:
       tags: [Users]
       summary: Create a new user
       description: >
         Registers a new user, creates a session and returns the user profile
-        with a bearer token. If the email is already in use, no user is created.
+        with a bearer token.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/UserCreate"
+              type: object
+              required: [firstName, lastName, email, password]
+              properties:
+                id:
+                  type: integer
+                  description: Optional explicit primary key.
+                firstName: { type: string }
+                lastName: { type: string }
+                email: { type: string, format: email }
+                password: { type: string, format: password }
       responses:
         "200":
           description: User created (returns profile and token)
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AuthResponse"
+                type: object
+                properties:
+                  id: { type: integer }
+                  email: { type: string, format: email }
+                  firstName: { type: string }
+                  lastName: { type: string }
+                  isAdmin: { type: boolean }
+                  token: { type: string }
         "400":
-          description: A required field (firstName, lastName, email, password) is missing
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+          description: A required field is missing, or the email is already in use
         "500":
           description: Error creating the user
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
     get:
       tags: [Users]
       summary: List users
-      description: Returns all users. Password and salt are never included.
+      description: >
+        Returns all users. Only `id`, `isAdmin`, `firstName`, `lastName` and
+        `email` are selected — password and salt are never included.
       parameters:
         - name: id
           in: query
           required: false
-          description: Filter users by a partial id match.
+          description: Filter users by a partial (SQL LIKE) id match.
           schema:
             type: string
       responses:
@@ -127,13 +216,15 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/UserPublic"
+                  type: object
+                  properties:
+                    id: { type: integer }
+                    firstName: { type: string }
+                    lastName: { type: string }
+                    email: { type: string, format: email }
+                    isAdmin: { type: boolean }
         "500":
           description: Error retrieving users
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
     delete:
       tags: [Users]
       summary: Delete all users
@@ -142,51 +233,33 @@ paths:
       responses:
         "200":
           description: Deletion result message
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Message"
         "401":
           description: Missing or expired bearer token
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
         "500":
           description: Error removing users
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
   /users/{id}:
     parameters:
-      - $ref: "#/components/parameters/IdPath"
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
     get:
       tags: [Users]
       summary: Get a user by id
       responses:
         "200":
-          description: The requested user
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/UserPublic"
+          description: The requested user (id, isAdmin, firstName, lastName, email)
         "404":
           description: User not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
         "500":
           description: Error retrieving user
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
     put:
       tags: [Users]
       summary: Update a user
+      description: >
+        Every listed field is written, so omitting one clears it. Responds with
+        the submitted values rather than the reloaded record.
       security:
         - bearerAuth: []
       requestBody:
@@ -194,83 +267,55 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/UserUpdate"
+              type: object
+              properties:
+                firstName: { type: string }
+                lastName: { type: string }
+                email: { type: string, format: email }
+                isAdmin: { type: boolean }
       responses:
         "200":
-          description: Updated user
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/UserPublic"
+          description: The updated field values
         "401":
           description: Missing or expired bearer token
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
         "404":
           description: User not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
         "500":
           description: Error updating user
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
     delete:
       tags: [Users]
       summary: Delete a user by id
+      description: >
+        Returns `200` with an explanatory message even when no user matched.
       security:
         - bearerAuth: []
       responses:
         "200":
           description: Deletion result message
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Message"
         "401":
           description: Missing or expired bearer token
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
         "500":
           description: Error deleting user
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
+  # ------------------------------------------------------------ Projects ----
   /projects:
     get:
       tags: [Projects]
       summary: List all projects
-      description: Returns all projects including their project members and member user profiles.
+      description: Includes each project's members and their user profiles.
       responses:
         "200":
           description: List of projects
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/ProjectWithMembers"
         "500":
           description: Error retrieving projects
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
     post:
       tags: [Projects]
       summary: Create a project
       description: >
-        Creates a project and adds the authenticated user as a manager
-        project member.
+        Creates a project, adds the authenticated user as a manager, and seeds
+        the default story types (Feature, Bug, Chore) and story states
+        (Not Started, In Progress, Ready for Test, In Test, Done). The last
+        seeded state becomes the project's `completedState`.
       security:
         - bearerAuth: []
       requestBody:
@@ -278,40 +323,33 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ProjectCreate"
+              type: object
+              required: [title, description, deadline]
+              properties:
+                title: { type: string }
+                description: { type: string }
+                deadline:
+                  type: string
+                  format: date-time
+                  description: Must be a valid date in the future.
       responses:
         "200":
-          description: Created project
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Project"
+          description: The created project
         "400":
-          description: Missing required fields or invalid deadline (must be a future date)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+          description: Missing required fields, or deadline is invalid or in the past
         "401":
           description: Authentication required
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
         "500":
           description: Error creating project
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
   /admin/projects:
     post:
       tags: [Projects]
-      summary: Create a project on behalf of a manager (admin)
+      summary: Create a project on behalf of a manager
       description: >
-        Creates a project and assigns the specified user (managerId) as the
-        manager project member.
+        Same as `POST /projects`, but assigns `managerId` as the manager
+        instead of the caller. Note that the caller's `isAdmin` flag is never
+        checked — any valid session may call this.
       security:
         - bearerAuth: []
       requestBody:
@@ -319,68 +357,51 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/AdminProjectCreate"
+              type: object
+              required: [title, description, deadline, managerId]
+              properties:
+                title: { type: string }
+                description: { type: string }
+                deadline: { type: string, format: date-time }
+                managerId:
+                  type: integer
+                  description: Id of the user to assign as project manager.
       responses:
         "200":
-          description: Created project
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Project"
+          description: The created project
         "400":
-          description: Missing required fields or invalid deadline (must be a future date)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+          description: Missing required fields or invalid deadline
         "401":
           description: Authentication required
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
         "404":
           description: Manager user not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
         "500":
           description: Error creating project
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
   /projects/{id}:
     parameters:
-      - $ref: "#/components/parameters/IdPath"
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
     get:
       tags: [Projects]
       summary: Get a project by id
-      description: Returns the project including its project members and their user profiles.
+      description: >
+        Includes story types, story states, sprints, repositories, the
+        branch-creation and PR-review states, and members with their profiles.
       responses:
         "200":
           description: The requested project
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ProjectWithMembers"
         "404":
           description: Project not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
         "500":
           description: Error retrieving project
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
     put:
       tags: [Projects]
       summary: Update a project
+      description: >
+        Only the listed fields are written; omitting one clears it.
       security:
         - bearerAuth: []
       requestBody:
@@ -388,68 +409,54 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ProjectUpdate"
+              type: object
+              properties:
+                title: { type: string }
+                description: { type: string }
+                deadline:
+                  type: string
+                  format: date-time
+                  description: If provided, must be a valid date in the future.
+                branchCreationStateId:
+                  type: integer
+                  nullable: true
+                  description: State a story moves to when a branch is created.
+                prReviewStateId:
+                  type: integer
+                  nullable: true
+                  description: State a story moves to when a PR opens.
+                completedStateId:
+                  type: integer
+                  nullable: true
+                  description: >
+                    State that marks a story complete; entering it stamps the
+                    story's `completedAt`. Must reference an existing state.
       responses:
         "200":
-          description: Updated project
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Project"
+          description: The updated project
         "400":
-          description: Invalid deadline (must be a future date)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+          description: Invalid deadline or invalid completed state
         "401":
           description: Authentication required
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
         "404":
           description: Project not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
         "500":
           description: Error updating project
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
     delete:
       tags: [Projects]
       summary: Delete a project
+      description: Cascades to members, states, types, sprints, repositories and stories.
       security:
         - bearerAuth: []
       responses:
         "200":
           description: Deletion result message
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Message"
         "401":
           description: Authentication required
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
         "404":
           description: Project not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
         "500":
           description: Error deleting project
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
   /users/me/projects:
     get:
@@ -460,264 +467,1148 @@ paths:
       responses:
         "200":
           description: Projects the authenticated user is a member of
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Project"
         "401":
           description: Authentication required
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
         "500":
           description: Error retrieving projects
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
+  # ----------------------------------------------------- Project members ----
   /projectMembers:
     get:
-      tags: [Reference / Read-only]
+      tags: [Project Members]
       summary: List all project members
       responses:
         "200":
           description: List of project members
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/ProjectMember"
         "500":
           description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
-  /repositories:
+  /projectMembers/user/{userId}:
     get:
-      tags: [Reference / Read-only]
-      summary: List all repositories
+      tags: [Project Members]
+      summary: List memberships for a user
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: integer }
       responses:
         "200":
-          description: List of repositories
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Repository"
+          description: Memberships belonging to the user
+        "401":
+          description: Authentication required
         "500":
           description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
-  /storyStates:
+  /projectMembers/project/{projectId}:
     get:
-      tags: [Reference / Read-only]
-      summary: List all story states
+      tags: [Project Members]
+      summary: List members of a project
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Memberships belonging to the project
+        "500":
+          description: Server error
+
+  /projectMembers/{project}/{member}:
+    post:
+      tags: [Project Members]
+      summary: Add a member to a project
+      description: >
+        The `project` and `member` path segments are required by the route but
+        ignored — the membership is built entirely from the request body. Note
+        that `isManager` is falsy-checked, so `false` is rejected as missing;
+        send the string `"false"` for a non-manager.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: project
+          in: path
+          required: true
+          description: Ignored by the handler.
+          schema: { type: string }
+        - name: member
+          in: path
+          required: true
+          description: Ignored by the handler.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, projectId, isManager]
+              properties:
+                userId: { type: integer }
+                projectId: { type: integer }
+                isManager:
+                  type: string
+                  description: Stored as a string column.
+      responses:
+        "200":
+          description: The created membership
+        "400":
+          description: Missing required fields
+        "401":
+          description: Authentication required
+        "500":
+          description: Error creating projectMember
+
+  /projectMembers/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    put:
+      tags: [Project Members]
+      summary: Update a membership
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                isManager: { type: string }
+      responses:
+        "200":
+          description: The updated membership
+        "401":
+          description: Authentication required
+        "404":
+          description: ProjectMember not found
+        "500":
+          description: Error updating projectMember
+    delete:
+      tags: [Project Members]
+      summary: Remove a membership
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Deletion result message
+        "401":
+          description: Authentication required
+        "404":
+          description: ProjectMember not found
+        "500":
+          description: Error deleting projectMember
+
+  # -------------------------------------------------------- Story states ----
+  /projects/{projectId}/storyStates:
+    parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [Story States]
+      summary: List a project's story states
+      description: Ordered by `order` ascending.
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: List of story states
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/StoryState"
+        "401":
+          description: Missing or expired bearer token
         "500":
           description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+    post:
+      tags: [Story States]
+      summary: Create a story state
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, order]
+              properties:
+                name: { type: string }
+                order:
+                  type: integer
+                  description: Must be non-zero; `0` is rejected as missing.
+      responses:
+        "200":
+          description: The created story state
+        "400":
+          description: Missing required fields, or the name is already used in this project
+        "401":
+          description: Missing or expired bearer token
+        "500":
+          description: Error creating story state
 
-  /storyTypes:
+  /projects/{projectId}/storyStates/reorder:
+    put:
+      tags: [Story States]
+      summary: Bulk-reorder story states
+      description: >
+        Upserts the supplied rows, updating `name` and `order`. Each entry must
+        carry the state's `id`; rows are not validated against `projectId`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [states]
+              properties:
+                states:
+                  type: array
+                  items:
+                    type: object
+                    required: [id, name, order]
+                    properties:
+                      id: { type: integer }
+                      name: { type: string }
+                      order: { type: integer }
+                      projectId: { type: integer }
+      responses:
+        "200":
+          description: Reorder succeeded
+        "401":
+          description: Missing or expired bearer token
+        "500":
+          description: Failed to reorder states
+
+  /projects/{projectId}/storyStates/{stateId}:
+    parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: stateId
+        in: path
+        required: true
+        schema: { type: integer }
+    put:
+      tags: [Story States]
+      summary: Rename a story state
+      description: This route has no authentication middleware.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        "200":
+          description: The updated story state
+        "400":
+          description: Missing name, or the name is already used in this project
+        "404":
+          description: StoryState not found in this project
+        "500":
+          description: Error updating story state
+    delete:
+      tags: [Story States]
+      summary: Delete a story state
+      description: >
+        Moves every story in this state to `fallbackStateId` first. This route
+        has no authentication middleware.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fallbackStateId]
+              properties:
+                fallbackStateId:
+                  type: integer
+                  description: State that orphaned stories are moved to.
+      responses:
+        "200":
+          description: Deletion result message
+        "400":
+          description: Missing fallbackStateId
+        "404":
+          description: StoryState not found in this project
+        "500":
+          description: Error deleting story state
+
+  # --------------------------------------------------------- Story types ----
+  /projects/{projectId}/storyTypes:
+    parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema: { type: integer }
     get:
-      tags: [Reference / Read-only]
-      summary: List all story types
+      tags: [Story Types]
+      summary: List a project's story types
+      description: Each type includes its stories.
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: List of story types
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/StoryType"
+        "401":
+          description: Missing or expired bearer token
         "500":
           description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+    post:
+      tags: [Story Types]
+      summary: Create a story type
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        "200":
+          description: The created story type
+        "400":
+          description: Missing name, or the name is already used in this project
+        "401":
+          description: Missing or expired bearer token
+        "500":
+          description: Error creating story type
 
+  /projects/{projectId}/storyTypes/{typeId}:
+    parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: typeId
+        in: path
+        required: true
+        schema: { type: integer }
+    put:
+      tags: [Story Types]
+      summary: Rename a story type
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        "200":
+          description: The updated story type
+        "400":
+          description: Missing name, or the name is already used in this project
+        "401":
+          description: Missing or expired bearer token
+        "404":
+          description: StoryType not found in this project
+        "500":
+          description: Error updating story type
+    delete:
+      tags: [Story Types]
+      summary: Delete a story type
+      description: Stories referencing this type have their `typeId` set to null.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Deletion result message
+        "401":
+          description: Missing or expired bearer token
+        "404":
+          description: StoryType not found in this project
+        "500":
+          description: Error deleting story type
+
+  # ------------------------------------------------------------- Sprints ----
   /sprints:
+    post:
+      tags: [Sprints]
+      summary: Create a sprint
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, startDate, endDate, projectId]
+              properties:
+                title: { type: string }
+                goal: { type: string, nullable: true }
+                startDate: { type: string, format: date }
+                endDate: { type: string, format: date }
+                status:
+                  type: string
+                  enum: [Planned, Active, Completed]
+                  default: Planned
+                projectId: { type: integer }
+      responses:
+        "200":
+          description: The created sprint
+        "400":
+          description: Missing required fields
+        "401":
+          description: Missing or expired bearer token
+        "500":
+          description: Error creating Sprint
+
+  /sprints/recurring:
+    post:
+      tags: [Sprints]
+      summary: Create a series of recurring sprints
+      description: >
+        Creates `recurrenceCount` sprints of the same length, spaced by the
+        recurrence pattern (Weekly = 7 days, Biweekly = 14, Monthly = 30), all
+        sharing a generated `recurrenceGroupId`. Titles are suffixed with the
+        sequence number.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                [title, startDate, endDate, projectId, recurrencePattern, recurrenceCount]
+              properties:
+                title: { type: string }
+                goal: { type: string, nullable: true }
+                startDate: { type: string, format: date }
+                endDate: { type: string, format: date }
+                projectId: { type: integer }
+                recurrencePattern:
+                  type: string
+                  enum: [Weekly, Biweekly, Monthly]
+                recurrenceCount:
+                  type: integer
+                  minimum: 2
+      responses:
+        "200":
+          description: The created sprints
+        "400":
+          description: >
+            Missing required fields, recurrenceCount below 2, or an unknown
+            recurrence pattern
+        "401":
+          description: Missing or expired bearer token
+        "500":
+          description: Error creating recurring Sprints
+
+  /projects/{projectId}/sprints:
     get:
-      tags: [Reference / Read-only]
-      summary: List all sprints
+      tags: [Sprints]
+      summary: List a project's sprints
+      description: Ordered by `startDate` ascending.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema: { type: integer }
       responses:
         "200":
           description: List of sprints
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Sprint"
+        "401":
+          description: Missing or expired bearer token
         "500":
-          description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+          description: Error retrieving Sprints for project
 
-  /retrospectives:
+  /sprints/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
     get:
-      tags: [Reference / Read-only]
-      summary: List all retrospectives
+      tags: [Sprints]
+      summary: Get a sprint by id
+      description: Includes the parent project and the sprint's stories.
+      security:
+        - bearerAuth: []
       responses:
         "200":
-          description: List of retrospectives
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Retrospective"
+          description: The requested sprint
+        "401":
+          description: Missing or expired bearer token
+        "404":
+          description: Sprint not found
         "500":
-          description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-
-  /standups:
-    get:
-      tags: [Reference / Read-only]
-      summary: List all standups
+          description: Error retrieving Sprint
+    put:
+      tags: [Sprints]
+      summary: Update a sprint
+      description: The request body is passed straight to the model update.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                goal: { type: string, nullable: true }
+                startDate: { type: string, format: date }
+                endDate: { type: string, format: date }
+                status:
+                  type: string
+                  enum: [Planned, Active, Completed]
+                isRecurring: { type: boolean }
+                recurrencePattern:
+                  type: string
+                  enum: [Weekly, Biweekly, Monthly]
+                  nullable: true
+                recurrenceGroupId: { type: string, nullable: true }
       responses:
         "200":
-          description: List of standups
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Standup"
+          description: The updated sprint
+        "401":
+          description: Missing or expired bearer token
+        "404":
+          description: Sprint not found
         "500":
-          description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+          description: Error updating Sprint
+    delete:
+      tags: [Sprints]
+      summary: Delete a sprint
+      description: Stories in the sprint have their `sprintId` set to null.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Deletion result message
+        "401":
+          description: Missing or expired bearer token
+        "404":
+          description: Sprint not found
+        "500":
+          description: Error deleting Sprint
 
-  /stories:
+  # ------------------------------------------------------------- Stories ----
+  /projects/{id}/stories:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
     get:
-      tags: [Reference / Read-only]
-      summary: List all stories
+      tags: [Stories]
+      summary: List a project's stories
+      description: >
+        Each story includes its state, type, repository, project, sprint,
+        reporter, assignee, reviewer, acceptance criteria and comments.
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: List of stories
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Story"
+        "401":
+          description: Missing or expired bearer token
         "500":
           description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+    post:
+      tags: [Stories]
+      summary: Create a story
+      description: >
+        The reporter is taken from the session. Records a `created` activity
+        entry and emails the assignee and reviewer when they are set to someone
+        other than the caller; email failures are logged, not returned.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, description, stateId]
+              properties:
+                title: { type: string }
+                description: { type: string }
+                stateId: { type: integer }
+                typeId: { type: integer, nullable: true }
+                priority: { type: string, nullable: true }
+                estimate: { type: integer, nullable: true }
+                sprintId: { type: integer, nullable: true }
+                repositoryId: { type: integer, nullable: true }
+                assigneeId: { type: integer, nullable: true }
+                reviewerId: { type: integer, nullable: true }
+      responses:
+        "200":
+          description: The created story
+        "400":
+          description: Missing required fields
+        "401":
+          description: Authentication required
+        "404":
+          description: Project not found
+        "500":
+          description: Error creating story
+
+  /projects/{projectId}/stories/{storyId}:
+    parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: storyId
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [Stories]
+      summary: Get a story by id
+      description: >
+        Includes state, type, repository, project, sprint, reporter, assignee,
+        reviewer, acceptance criteria, comments and both directions of its
+        relations. `projectId` is not used to scope the lookup.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The requested story
+        "401":
+          description: Missing or expired bearer token
+        "404":
+          description: Story not found
+        "500":
+          description: Error retrieving story
+    put:
+      tags: [Stories]
+      summary: Update a story
+      description: >
+        Only supplied fields are written. Moving the story into the project's
+        `completedState` stamps `completedAt`. Every changed field is recorded
+        as an activity change; new assignees and reviewers are emailed.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                description: { type: string }
+                typeId: { type: integer, nullable: true }
+                stateId: { type: integer }
+                priority: { type: string, nullable: true }
+                estimate: { type: integer, nullable: true }
+                sprintId: { type: integer, nullable: true }
+                repositoryId: { type: integer, nullable: true }
+                assigneeId: { type: integer, nullable: true }
+                reviewerId: { type: integer, nullable: true }
+      responses:
+        "200":
+          description: The updated story
+        "400":
+          description: title, description or stateId was supplied but empty
+        "401":
+          description: Authentication required
+        "404":
+          description: Story not found
+        "500":
+          description: Error updating story
+    delete:
+      tags: [Stories]
+      summary: Delete a story
+      description: Cascades to acceptance criteria, comments, relations and activity.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Deletion result message
+        "401":
+          description: Authentication required
+        "404":
+          description: Story not found
+        "500":
+          description: Error deleting story
+
+  /projects/{projectId}/stories/{storyId}/relations:
+    parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: storyId
+        in: path
+        required: true
+        schema: { type: integer }
+    post:
+      tags: [Stories]
+      summary: Relate two stories
+      description: >
+        Both stories must belong to the project, one of them must be the story
+        in the path, and the pair must not already be related in either
+        direction. Records an activity entry on both stories.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, storyOneId, storyTwoId]
+              properties:
+                type:
+                  type: string
+                  enum: [BLOCKS, RELATES_TO, DUPLICATES, PARENT_OF]
+                storyOneId:
+                  type: integer
+                  description: Source side; must be a number, not a string.
+                storyTwoId:
+                  type: integer
+                  description: Target side; must be a number, not a string.
+      responses:
+        "200":
+          description: The created relation
+        "400":
+          description: >
+            Invalid type, self-relation, the path story is not part of the
+            relation, a story is missing from the project, or the stories are
+            already related
+        "401":
+          description: Authentication required
+        "500":
+          description: Error creating relation
+
+  /projects/{projectId}/stories/{storyId}/relations/{relationId}:
+    delete:
+      tags: [Stories]
+      summary: Delete a relation
+      description: >
+        The relation is matched on `storyOneId`, so it can only be deleted from
+        the source story's side. Records an activity entry on both stories.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: storyId
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: relationId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Deletion result message
+        "401":
+          description: Authentication required
+        "404":
+          description: Relation not found for this story
+        "500":
+          description: Error deleting relation
+
+  # -------------------------------------------------- Acceptance criteria ---
+  /projects/{projectId}/stories/{storyId}/acceptanceCriteria:
+    post:
+      tags: [Acceptance Criteria]
+      summary: Add an acceptance criterion to a story
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: storyId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, status]
+              properties:
+                title: { type: string }
+                description: { type: string }
+                status: { type: string }
+      responses:
+        "200":
+          description: The created criterion
+        "400":
+          description: Missing title or status
+        "401":
+          description: Authentication required
+        "404":
+          description: Story not found in this project
+        "500":
+          description: Error creating acceptance criteria
+
+  /projects/{projectId}/stories/{storyId}/acceptanceCriteria/{criterionId}:
+    parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: storyId
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: criterionId
+        in: path
+        required: true
+        schema: { type: integer }
+    put:
+      tags: [Acceptance Criteria]
+      summary: Update an acceptance criterion
+      description: >
+        Title, description and status are all written, so omitting one clears
+        it. Changed fields are recorded as activity changes.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, status]
+              properties:
+                title: { type: string }
+                description: { type: string }
+                status: { type: string }
+      responses:
+        "200":
+          description: The updated criterion
+        "400":
+          description: Missing title or status
+        "401":
+          description: Authentication required
+        "404":
+          description: Story or criterion not found
+        "500":
+          description: Error updating acceptance criteria
+    delete:
+      tags: [Acceptance Criteria]
+      summary: Delete an acceptance criterion
+      description: Records a `deleted` activity entry before removing the row.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Deletion result message
+        "401":
+          description: Authentication required
+        "404":
+          description: Story or criterion not found
+        "500":
+          description: Error deleting acceptance criteria
+
+  # ------------------------------------------------------------ Comments ----
+  /projects/{projectId}/stories/{storyId}/comments:
+    parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: storyId
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [Comments]
+      summary: List a story's comments
+      description: Each comment includes its author.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List of comments
+        "401":
+          description: Missing or expired bearer token
+        "404":
+          description: Story not found
+        "500":
+          description: Server error
+    post:
+      tags: [Comments]
+      summary: Comment on a story
+      description: >
+        Records a `created` activity entry and emails any users mentioned in
+        the content. Mentions are parsed out of `data-id="<userId>"` attributes
+        in the comment HTML.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content:
+                  type: string
+                  description: HTML body; mentions carry a `data-id` attribute.
+      responses:
+        "200":
+          description: The created comment, including its author
+        "400":
+          description: Missing content
+        "401":
+          description: Authentication required
+        "404":
+          description: Story not found
+        "500":
+          description: Error creating comment
+
+  /projects/{projectId}/stories/{storyId}/acceptanceCriteria/{criterionId}/comments:
+    parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: storyId
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: criterionId
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [Comments]
+      summary: List an acceptance criterion's comments
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List of comments
+        "401":
+          description: Missing or expired bearer token
+        "404":
+          description: Acceptance criteria not found
+        "500":
+          description: Server error
+    post:
+      tags: [Comments]
+      summary: Comment on an acceptance criterion
+      description: >
+        The activity entry is filed against the criterion's parent story.
+        Mentioned users are emailed with links to both the story and the
+        criterion.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string }
+      responses:
+        "200":
+          description: The created comment, including its author
+        "400":
+          description: Missing content
+        "401":
+          description: Authentication required
+        "404":
+          description: Acceptance criteria not found
+        "500":
+          description: Error creating comment
+
+  /comments/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    put:
+      tags: [Comments]
+      summary: Edit a comment
+      description: >
+        Only the comment's author may edit it. No activity entry is recorded
+        for edits.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                content: { type: string }
+      responses:
+        "200":
+          description: The updated comment
+        "400":
+          description: Comment not found, or the caller is not its author
+        "401":
+          description: Authentication required
+        "500":
+          description: Error updating comment
+    delete:
+      tags: [Comments]
+      summary: Delete a comment
+      description: >
+        Only the comment's author may delete it. Records a `deleted` activity
+        entry against the story the comment belongs to.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Deletion result message
+        "400":
+          description: Comment not found, or the caller is not its author
+        "401":
+          description: Authentication required
+        "500":
+          description: Error deleting comment
+
+  # ------------------------------------------------------------ Activity ----
+  /projects/{projectId}/stories/{storyId}/activity:
+    get:
+      tags: [Activity]
+      summary: Get a story's activity history
+      description: >
+        Newest first. Each entry includes the acting user, the story, and the
+        per-attribute changes. Entries carry a `subjectType` of `story`,
+        `acceptanceCriteria`, `comment` or `relation` plus a `metadata` blob so
+        they still render after the subject is deleted. This route has no
+        authentication middleware.
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: storyId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Activity entries for the story
+        "500":
+          description: Story not found, or another error occurred
+  # -------------------------------------------------- Reference endpoints ---
+  /stories:
+    get:
+      tags: [Reference / Read-only]
+      summary: List every story in every project
+      responses:
+        "200": { description: List of stories }
+        "500": { description: Server error }
 
   /relations:
     get:
       tags: [Reference / Read-only]
-      summary: List all relations
+      summary: List every relation
       responses:
-        "200":
-          description: List of relations
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Relation"
-        "500":
-          description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+        "200": { description: List of relations }
+        "500": { description: Server error }
 
   /acceptanceCriteria:
     get:
       tags: [Reference / Read-only]
-      summary: List all acceptance criteria
+      summary: List every acceptance criterion
       responses:
-        "200":
-          description: List of acceptance criteria
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/AcceptanceCriteria"
-        "500":
-          description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+        "200": { description: List of acceptance criteria }
+        "500": { description: Server error }
 
   /comments:
     get:
       tags: [Reference / Read-only]
-      summary: List all comments
+      summary: List every comment
       responses:
-        "200":
-          description: List of comments
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Comment"
-        "500":
-          description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+        "200": { description: List of comments }
+        "500": { description: Server error }
 
   /activities:
     get:
       tags: [Reference / Read-only]
-      summary: List all activities
+      summary: List every activity entry
       responses:
-        "200":
-          description: List of activities
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Activity"
-        "500":
-          description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+        "200": { description: List of activities }
+        "500": { description: Server error }
+
+  /storyStates:
+    get:
+      tags: [Reference / Read-only]
+      summary: List every story state
+      responses:
+        "200": { description: List of story states, ordered by `order` }
+        "500": { description: Server error }
+
+  /storyTypes:
+    get:
+      tags: [Reference / Read-only]
+      summary: List every story type
+      responses:
+        "200": { description: List of story types }
+        "500": { description: Server error }
+
+  /repositories:
+    get:
+      tags: [Reference / Read-only]
+      summary: List every repository
+      responses:
+        "200": { description: List of repositories }
+        "500": { description: Server error }
+
+  /retrospectives:
+    get:
+      tags: [Reference / Read-only]
+      summary: List every retrospective
+      description: Retrospectives have no write endpoints yet.
+      responses:
+        "200": { description: List of retrospectives }
+        "500": { description: Server error }
+
+  /standups:
+    get:
+      tags: [Reference / Read-only]
+      summary: List every standup
+      description: Standups have no write endpoints yet.
+      responses:
+        "200": { description: List of standups }
+        "500": { description: Server error }
 
 components:
   securitySchemes:
@@ -728,292 +1619,6 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      description: Encrypted session id issued by POST /login or POST /users.
-
-  parameters:
-    IdPath:
-      name: id
-      in: path
-      required: true
-      description: Resource identifier.
-      schema:
-        type: integer
-
-  schemas:
-    Error:
-      type: object
-      properties:
-        message:
-          type: string
-      required: [message]
-
-    Message:
-      type: object
-      properties:
-        message:
-          type: string
-      required: [message]
-
-    AuthResponse:
-      type: object
-      description: Returned by login and user creation.
-      properties:
-        id:
-          type: integer
-        email:
-          type: string
-          format: email
-        firstName:
-          type: string
-        lastName:
-          type: string
-        isAdmin:
-          type: boolean
-        token:
-          type: string
-          description: Bearer token to use in the Authorization header.
-
-    UserCreate:
-      type: object
-      required: [firstName, lastName, email, password]
-      properties:
-        firstName:
-          type: string
-        lastName:
-          type: string
-        email:
-          type: string
-          format: email
-        password:
-          type: string
-          format: password
-
-    UserUpdate:
-      type: object
-      properties:
-        firstName:
-          type: string
-        lastName:
-          type: string
-        email:
-          type: string
-          format: email
-        isAdmin:
-          type: boolean
-
-    UserPublic:
-      type: object
-      description: User record without password/salt.
-      properties:
-        id:
-          type: integer
-        firstName:
-          type: string
-        lastName:
-          type: string
-        email:
-          type: string
-          format: email
-        isAdmin:
-          type: boolean
-
-    Project:
-      type: object
-      properties:
-        id:
-          type: integer
-        title:
-          type: string
-        description:
-          type: string
-        deadline:
-          type: string
-          format: date-time
-        createdAt:
-          type: string
-          format: date-time
-        updatedAt:
-          type: string
-          format: date-time
-
-    ProjectWithMembers:
-      allOf:
-        - $ref: "#/components/schemas/Project"
-        - type: object
-          properties:
-            projectMembers:
-              type: array
-              items:
-                $ref: "#/components/schemas/ProjectMember"
-
-    ProjectCreate:
-      type: object
-      required: [title, description, deadline]
-      properties:
-        title:
-          type: string
-        description:
-          type: string
-        deadline:
-          type: string
-          format: date-time
-          description: Must be a valid date in the future.
-
-    AdminProjectCreate:
-      allOf:
-        - $ref: "#/components/schemas/ProjectCreate"
-        - type: object
-          required: [managerId]
-          properties:
-            managerId:
-              type: integer
-              description: Id of the user to assign as project manager.
-
-    ProjectUpdate:
-      type: object
-      properties:
-        title:
-          type: string
-        description:
-          type: string
-        deadline:
-          type: string
-          format: date-time
-          description: If provided, must be a valid date in the future.
-
-    ProjectMember:
-      type: object
-      properties:
-        id:
-          type: integer
-        isManager:
-          type: string
-          description: Whether the member is a project manager.
-        userId:
-          type: integer
-        projectId:
-          type: integer
-        user:
-          $ref: "#/components/schemas/UserPublic"
-
-    Repository:
-      type: object
-      properties:
-        id:
-          type: integer
-        githubId:
-          type: string
-        name:
-          type: string
-
-    StoryState:
-      type: object
-      properties:
-        id:
-          type: integer
-        name:
-          type: string
-        type:
-          type: string
-        order:
-          type: integer
-
-    StoryType:
-      type: object
-      properties:
-        id:
-          type: integer
-        name:
-          type: string
-
-    Sprint:
-      type: object
-      properties:
-        id:
-          type: integer
-        name:
-          type: string
-        start:
-          type: string
-          format: date-time
-        end:
-          type: string
-          format: date-time
-
-    Retrospective:
-      type: object
-      properties:
-        id:
-          type: integer
-        agenda:
-          type: string
-          nullable: true
-        summary:
-          type: string
-
-    Standup:
-      type: object
-      properties:
-        id:
-          type: integer
-        agenda:
-          type: string
-          nullable: true
-        notes:
-          type: string
-        date:
-          type: string
-          format: date-time
-
-    Story:
-      type: object
-      properties:
-        id:
-          type: integer
-        title:
-          type: string
-        description:
-          type: string
-        priority:
-          type: integer
-        estimate:
-          type: integer
-
-    Relation:
-      type: object
-      properties:
-        id:
-          type: integer
-        type:
-          type: string
-
-    AcceptanceCriteria:
-      type: object
-      properties:
-        id:
-          type: integer
-        title:
-          type: string
-        description:
-          type: string
-        status:
-          type: string
-
-    Comment:
-      type: object
-      properties:
-        id:
-          type: integer
-        content:
-          type: string
-
-    Activity:
-      type: object
-      properties:
-        id:
-          type: integer
-        action:
-          type: string
-        changes:
-          type: object
-          description: Arbitrary JSON describing the change.
+      description: >
+        Encrypted session id issued by POST /login, POST /github/login or
+        POST /users.

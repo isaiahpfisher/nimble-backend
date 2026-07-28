@@ -132,9 +132,13 @@ exports.create = async (req, res) => {
     await StoryType.bulkCreate(
       DEFAULT_PROJECT_STORY_TYPES.map((t) => ({ ...t, projectId: data.id })),
     );
-    await StoryState.bulkCreate(
+    const states = await StoryState.bulkCreate(
       DEFAULT_PROJECT_STORY_STATES.map((s) => ({ ...s, projectId: data.id })),
     );
+
+    await data.update({
+      completedStateId: states[states.length - 1].id,
+    });
 
     res.send(data);
   } catch (err) {
@@ -185,12 +189,16 @@ exports.adminCreate = async (req, res) => {
         projectId: data.id,
       })),
     );
-    await StoryState.bulkCreate(
+    const states = await StoryState.bulkCreate(
       DEFAULT_PROJECT_STORY_STATES.map((s) => ({
         ...s,
         projectId: data.id,
       })),
     );
+
+    await data.update({
+      completedStateId: states[states.length - 1].id,
+    });
 
     res.send(data);
   } catch (err) {
@@ -216,12 +224,23 @@ exports.update = async (req, res) => {
       }
     }
 
+    if (req.body.completedStateId) {
+      if (
+        !(await StoryState.findOne({
+          where: { id: req.body.completedStateId },
+        }))
+      ) {
+        throw httpError("Invalid completed state.", 400);
+      }
+    }
+
     const {
       title,
       description,
       deadline,
       branchCreationStateId,
       prReviewStateId,
+      completedStateId,
     } = req.body;
     await project.update({
       title,
@@ -229,6 +248,7 @@ exports.update = async (req, res) => {
       deadline,
       branchCreationStateId,
       prReviewStateId,
+      completedStateId,
     });
 
     res.send(project);
