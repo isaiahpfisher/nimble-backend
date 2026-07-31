@@ -22,19 +22,46 @@ info:
     Tokens expire 24 hours after they are issued.
 
 
+    ## Authorization
+
+    Authenticating proves who you are; every protected endpoint then checks
+    what you may reach. Four rules cover the whole API:
+
+    - **Project membership** — anything scoped to a project requires a
+      `projectMember` row joining the caller to that project. This covers
+      stories, sprints, story states, story types, repositories, comments,
+      acceptance criteria, relations, the backlog and activity history.
+      Refusal is `403`.
+    - **Member management** — adding, removing or promoting members
+      additionally requires that the caller's membership has `isManager` set.
+      Refusal is `403`.
+    - **Administrator** — the unscoped collection endpoints (see the
+      *Reference / Read-only* tag), `POST /admin/projects`, `DELETE /users`
+      and granting the `isAdmin` flag require `isAdmin` on the caller.
+      Refusal is `403`.
+    - **Self or administrator** — reading or modifying a specific user record,
+      and listing a specific user's memberships, require that the caller *is*
+      that user, or is an administrator. Refusal is `403`.
+
+    A user with `isAdmin` bypasses the project-membership and manager checks
+    everywhere, including member management.
+
+    Child records are always verified against the project in the URL, so a
+    story, sprint, criterion or state belonging to another project reports
+    `404` rather than being returned. Endpoints keyed on a bare resource id
+    rather than a project id — currently `/repositories/{id}` — also report
+    `404` instead of `403` when the caller lacks access, so the id cannot be
+    used to probe for rows in projects the caller cannot see.
+
+    Two endpoints are stricter than membership: editing and deleting a comment
+    require that the caller is its author (`403` otherwise).
+
+
     ## Error responses
 
     Unless noted otherwise, every non-2xx response is a JSON object with a
     single `message` string. Handlers fall back to `500` when no explicit
-    status code was set, so a malformed request can surface as a `500`.
-
-
-    ## A note on authorization
-
-    Endpoints marked with `bearerAuth` only verify that the caller holds a
-    valid, unexpired session. With few exceptions (comment edit/delete, which
-    check ownership) there is **no** check that the caller is a member of the
-    project being modified.
+    status code was set, so a malformed request can still surface as a `500`.
 servers:
   - url: http://localhost:3200/nimbleapi
     description: Local development server (default PORT 3200)
@@ -51,10 +78,14 @@ tags:
     description: Per-project workflow states
   - name: Story Types
     description: Per-project story types
+  - name: Repositories
+    description: GitHub repositories linked to a project
   - name: Sprints
     description: Sprint planning, including recurring sprints
   - name: Stories
     description: Stories and their relations
+  - name: Backlog
+    description: Unsprinted stories and sprint assignment
   - name: Acceptance Criteria
     description: Acceptance criteria on a story
   - name: Comments
@@ -63,8 +94,8 @@ tags:
     description: Activity history
   - name: Reference / Read-only
     description: >
-      Unscoped collection endpoints that dump every row of a table. Unused by
-      the app itself; handy for debugging.
+      Unscoped collection endpoints that dump every row of a table.
+      **Administrator only.** Unused by the app itself; handy for debugging.
 
 paths:
   # ---------------------------------------------------------------- Auth ----
@@ -161,7 +192,7 @@ paths:
       summary: Create a new user
       description: >
         Registers a new user, creates a session and returns the user profile
-        with a bearer token.
+        with a bearer token. This is the only unauthenticated write endpoint.
       requestBody:
         required: true
         content:
@@ -199,8 +230,12 @@ paths:
       tags: [Users]
       summary: List users
       description: >
-        Returns all users. Only `id`, `isAdmin`, `firstName`, `lastName` and
-        `email` are selected — password and salt are never included.
+        Returns all users. Available to any signed-in caller, since the app
+        needs it for assignee pickers and @mentions. Only `id`, `isAdmin`,
+        `firstName`, `lastName` and `email` are selected — password and salt
+        are never included.
+      security:
+        - bearerAuth: []
       parameters:
         - name: id
           in: query
@@ -223,11 +258,14 @@ paths:
                     lastName: { type: string }
                     email: { type: string, format: email }
                     isAdmin: { type: boolean }
+        "401":
+          description: Authentication required
         "500":
           description: Error retrieving users
     delete:
       tags: [Users]
       summary: Delete all users
+      description: Administrator only.
       security:
         - bearerAuth: []
       responses:
@@ -235,6 +273,8 @@ paths:
           description: Deletion result message
         "401":
           description: Missing or expired bearer token
+        "403":
+          description: Administrator access required
         "500":
           description: Error removing users
 
@@ -247,9 +287,14 @@ paths:
     get:
       tags: [Users]
       summary: Get a user by id
+      description: Available to any signed-in caller.
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: The requested user (id, isAdmin, firstName, lastName, email)
+        "401":
+          description: Authentication required
         "404":
           description: User not found
         "500":
@@ -258,8 +303,17 @@ paths:
       tags: [Users]
       summary: Update a user
       description: >
-        Every listed field is written, so omitting one clears it. Responds with
-        the submitted values rather than the reloaded record.
+        The caller must be this user, or an administrator. `firstName`,
+        `lastName` and `email` are all written, so omitting one clears it.
+
+
+        `isAdmin` is handled separately: it is only written when the body
+        supplies it *and* the caller is an administrator — a non-administrator
+        supplying it is refused with `403` and nothing is saved. When the body
+        omits `isAdmin`, the flag is left untouched.
+
+
+        Responds with the submitted values rather than the reloaded record.
       security:
         - bearerAuth: []
       requestBody:
@@ -272,12 +326,18 @@ paths:
                 firstName: { type: string }
                 lastName: { type: string }
                 email: { type: string, format: email }
-                isAdmin: { type: boolean }
+                isAdmin:
+                  type: boolean
+                  description: Administrator only; rejected with 403 otherwise.
       responses:
         "200":
           description: The updated field values
         "401":
-          description: Missing or expired bearer token
+          description: Authentication required
+        "403":
+          description: >
+            Caller is neither this user nor an administrator, or a
+            non-administrator tried to set `isAdmin`
         "404":
           description: User not found
         "500":
@@ -286,14 +346,17 @@ paths:
       tags: [Users]
       summary: Delete a user by id
       description: >
-        Returns `200` with an explanatory message even when no user matched.
+        The caller must be this user, or an administrator. Returns `200` with
+        an explanatory message even when no user matched.
       security:
         - bearerAuth: []
       responses:
         "200":
           description: Deletion result message
         "401":
-          description: Missing or expired bearer token
+          description: Authentication required
+        "403":
+          description: Caller is neither this user nor an administrator
         "500":
           description: Error deleting user
 
@@ -302,10 +365,18 @@ paths:
     get:
       tags: [Projects]
       summary: List all projects
-      description: Includes each project's members and their user profiles.
+      description: >
+        Administrator only. Includes each project's members and their user
+        profiles. Regular users should call `GET /users/me/projects`.
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: List of projects
+        "401":
+          description: Authentication required
+        "403":
+          description: Administrator access required
         "500":
           description: Error retrieving projects
     post:
@@ -316,6 +387,9 @@ paths:
         the default story types (Feature, Bug, Chore) and story states
         (Not Started, In Progress, Ready for Test, In Test, Done). The last
         seeded state becomes the project's `completedState`.
+
+
+        Any signed-in user may create a project.
       security:
         - bearerAuth: []
       requestBody:
@@ -348,8 +422,7 @@ paths:
       summary: Create a project on behalf of a manager
       description: >
         Same as `POST /projects`, but assigns `managerId` as the manager
-        instead of the caller. Note that the caller's `isAdmin` flag is never
-        checked — any valid session may call this.
+        instead of the caller. Administrator only.
       security:
         - bearerAuth: []
       requestBody:
@@ -373,6 +446,8 @@ paths:
           description: Missing required fields or invalid deadline
         "401":
           description: Authentication required
+        "403":
+          description: Administrator access required
         "404":
           description: Manager user not found
         "500":
@@ -390,9 +465,15 @@ paths:
       description: >
         Includes story types, story states, sprints, repositories, the
         branch-creation and PR-review states, and members with their profiles.
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: The requested project
+        "401":
+          description: Authentication required
+        "403":
+          description: Caller is not a member of this project
         "404":
           description: Project not found
         "500":
@@ -401,7 +482,13 @@ paths:
       tags: [Projects]
       summary: Update a project
       description: >
-        Only the listed fields are written; omitting one clears it.
+        Only the listed fields are written; omitting one clears it. Any member
+        may update the project.
+
+
+        Each of the three workflow state ids, when supplied, must reference a
+        story state **belonging to this project**; pointing one at another
+        project's state is rejected with `400`.
       security:
         - bearerAuth: []
       requestBody:
@@ -420,24 +507,33 @@ paths:
                 branchCreationStateId:
                   type: integer
                   nullable: true
-                  description: State a story moves to when a branch is created.
+                  description: >
+                    State a story moves to when a branch is created. Must
+                    belong to this project.
                 prReviewStateId:
                   type: integer
                   nullable: true
-                  description: State a story moves to when a PR opens.
+                  description: >
+                    State a story moves to when a PR opens. Must belong to this
+                    project.
                 completedStateId:
                   type: integer
                   nullable: true
                   description: >
                     State that marks a story complete; entering it stamps the
-                    story's `completedAt`. Must reference an existing state.
+                    story's `completedAt`. Must belong to this project.
       responses:
         "200":
           description: The updated project
         "400":
-          description: Invalid deadline or invalid completed state
+          description: >
+            Invalid deadline, or one of `completedStateId`,
+            `branchCreationStateId` or `prReviewStateId` does not name a state
+            in this project
         "401":
           description: Authentication required
+        "403":
+          description: Caller is not a member of this project
         "404":
           description: Project not found
         "500":
@@ -445,7 +541,9 @@ paths:
     delete:
       tags: [Projects]
       summary: Delete a project
-      description: Cascades to members, states, types, sprints, repositories and stories.
+      description: >
+        Cascades to members, states, types, sprints, repositories and stories.
+        Any member may delete the project.
       security:
         - bearerAuth: []
       responses:
@@ -453,6 +551,8 @@ paths:
           description: Deletion result message
         "401":
           description: Authentication required
+        "403":
+          description: Caller is not a member of this project
         "404":
           description: Project not found
         "500":
@@ -462,6 +562,9 @@ paths:
     get:
       tags: [Projects]
       summary: List the authenticated user's projects
+      description: >
+        Scoped to the caller's own memberships; no authorization check is
+        needed because the query is keyed on the session's user id.
       security:
         - bearerAuth: []
       responses:
@@ -477,9 +580,16 @@ paths:
     get:
       tags: [Project Members]
       summary: List all project members
+      description: Administrator only.
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: List of project members
+        "401":
+          description: Authentication required
+        "403":
+          description: Administrator access required
         "500":
           description: Server error
 
@@ -487,6 +597,7 @@ paths:
     get:
       tags: [Project Members]
       summary: List memberships for a user
+      description: The caller must be this user, or an administrator.
       security:
         - bearerAuth: []
       parameters:
@@ -499,6 +610,8 @@ paths:
           description: Memberships belonging to the user
         "401":
           description: Authentication required
+        "403":
+          description: Caller is neither this user nor an administrator
         "500":
           description: Server error
 
@@ -506,6 +619,8 @@ paths:
     get:
       tags: [Project Members]
       summary: List members of a project
+      security:
+        - bearerAuth: []
       parameters:
         - name: projectId
           in: path
@@ -514,6 +629,10 @@ paths:
       responses:
         "200":
           description: Memberships belonging to the project
+        "401":
+          description: Authentication required
+        "403":
+          description: Caller is not a member of this project
         "500":
           description: Server error
 
@@ -522,10 +641,15 @@ paths:
       tags: [Project Members]
       summary: Add a member to a project
       description: >
+        Requires that the caller is a **manager** of the target project, or an
+        administrator.
+
+
         The `project` and `member` path segments are required by the route but
-        ignored — the membership is built entirely from the request body. Note
-        that `isManager` is falsy-checked, so `false` is rejected as missing;
-        send the string `"false"` for a non-manager.
+        ignored — the membership is built entirely from the request body, and
+        the authorization check reads `projectId` from the body too. Note that
+        `isManager` is falsy-checked, so `false` is rejected as missing; send
+        the string `"false"` for a non-manager.
       security:
         - bearerAuth: []
       parameters:
@@ -551,7 +675,9 @@ paths:
                 projectId: { type: integer }
                 isManager:
                   type: string
-                  description: Stored as a string column.
+                  description: >
+                    Stored as a string column defaulting to `"0"`. Only `"1"`,
+                    `"true"`, `1` and `true` count as manager.
       responses:
         "200":
           description: The created membership
@@ -559,6 +685,10 @@ paths:
           description: Missing required fields
         "401":
           description: Authentication required
+        "403":
+          description: >
+            Caller is not a member of the project, or is a member but not a
+            manager
         "500":
           description: Error creating projectMember
 
@@ -571,6 +701,9 @@ paths:
     put:
       tags: [Project Members]
       summary: Update a membership
+      description: >
+        Requires that the caller is a manager of the project this membership
+        belongs to, or an administrator.
       security:
         - bearerAuth: []
       requestBody:
@@ -586,6 +719,8 @@ paths:
           description: The updated membership
         "401":
           description: Authentication required
+        "403":
+          description: Caller is not a manager of this membership's project
         "404":
           description: ProjectMember not found
         "500":
@@ -593,6 +728,9 @@ paths:
     delete:
       tags: [Project Members]
       summary: Remove a membership
+      description: >
+        Requires that the caller is a manager of the project this membership
+        belongs to, or an administrator.
       security:
         - bearerAuth: []
       responses:
@@ -600,6 +738,8 @@ paths:
           description: Deletion result message
         "401":
           description: Authentication required
+        "403":
+          description: Caller is not a manager of this membership's project
         "404":
           description: ProjectMember not found
         "500":
@@ -623,6 +763,8 @@ paths:
           description: List of story states
         "401":
           description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of this project
         "500":
           description: Server error
     post:
@@ -649,6 +791,8 @@ paths:
           description: Missing required fields, or the name is already used in this project
         "401":
           description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of this project
         "500":
           description: Error creating story state
 
@@ -658,7 +802,13 @@ paths:
       summary: Bulk-reorder story states
       description: >
         Upserts the supplied rows, updating `name` and `order`. Each entry must
-        carry the state's `id`; rows are not validated against `projectId`.
+        carry the state's `id`.
+
+
+        Every id is verified to belong to this project before anything is
+        written, and each row is stamped with the path's `projectId`, so the
+        upsert cannot reach or claim another project's states. Any `projectId`
+        supplied in the body is overwritten.
       security:
         - bearerAuth: []
       parameters:
@@ -676,6 +826,7 @@ paths:
               properties:
                 states:
                   type: array
+                  minItems: 1
                   items:
                     type: object
                     required: [id, name, order]
@@ -683,12 +834,20 @@ paths:
                       id: { type: integer }
                       name: { type: string }
                       order: { type: integer }
-                      projectId: { type: integer }
+                      projectId:
+                        type: integer
+                        description: Ignored; overwritten with the path projectId.
       responses:
         "200":
           description: Reorder succeeded
+        "400":
+          description: >
+            `states` is missing or empty, or one or more of the supplied states
+            does not belong to this project
         "401":
           description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of this project
         "500":
           description: Failed to reorder states
 
@@ -705,7 +864,8 @@ paths:
     put:
       tags: [Story States]
       summary: Rename a story state
-      description: This route has no authentication middleware.
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -720,6 +880,10 @@ paths:
           description: The updated story state
         "400":
           description: Missing name, or the name is already used in this project
+        "401":
+          description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of this project
         "404":
           description: StoryState not found in this project
         "500":
@@ -728,8 +892,10 @@ paths:
       tags: [Story States]
       summary: Delete a story state
       description: >
-        Moves every story in this state to `fallbackStateId` first. This route
-        has no authentication middleware.
+        Moves every story in this state to `fallbackStateId` first. The
+        fallback must itself be a state of this project.
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -740,14 +906,22 @@ paths:
               properties:
                 fallbackStateId:
                   type: integer
-                  description: State that orphaned stories are moved to.
+                  description: >
+                    State that orphaned stories are moved to. Must belong to
+                    this project.
       responses:
         "200":
           description: Deletion result message
         "400":
           description: Missing fallbackStateId
+        "401":
+          description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of this project
         "404":
-          description: StoryState not found in this project
+          description: >
+            StoryState not found in this project, or `fallbackStateId` does not
+            name a state in this project
         "500":
           description: Error deleting story state
 
@@ -769,6 +943,8 @@ paths:
           description: List of story types
         "401":
           description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of this project
         "500":
           description: Server error
     post:
@@ -792,6 +968,8 @@ paths:
           description: Missing name, or the name is already used in this project
         "401":
           description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of this project
         "500":
           description: Error creating story type
 
@@ -826,6 +1004,8 @@ paths:
           description: Missing name, or the name is already used in this project
         "401":
           description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of this project
         "404":
           description: StoryType not found in this project
         "500":
@@ -841,16 +1021,144 @@ paths:
           description: Deletion result message
         "401":
           description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of this project
         "404":
           description: StoryType not found in this project
         "500":
           description: Error deleting story type
+
+  # -------------------------------------------------------- Repositories ----
+  /projects/{projectId}/repositories:
+    parameters:
+      - name: projectId
+        in: path
+        required: true
+        schema: { type: integer }
+    post:
+      tags: [Repositories]
+      summary: Link a GitHub repository to a project
+      description: >
+        The `githubId` is verified against `https://api.github.com/repositories/{githubId}`
+        before the row is created; an unreachable id is rejected with `400`.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [githubId, name]
+              properties:
+                githubId:
+                  type: string
+                  description: Numeric GitHub repository id, as a string.
+                name: { type: string }
+      responses:
+        "200":
+          description: The created repository
+        "400":
+          description: Invalid GitHub repository ID
+        "401":
+          description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of this project
+        "500":
+          description: Error creating repository
+    get:
+      tags: [Repositories]
+      summary: List a project's repositories
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List of repositories
+        "401":
+          description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of this project
+        "500":
+          description: Server error
+
+  /repositories/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [Repositories]
+      summary: Get a repository by id
+      description: >
+        The caller must belong to the repository's project. Because the URL
+        carries no project id, a caller without access is answered `404` rather
+        than `403`, so the id cannot be used to probe other projects.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The requested repository
+        "401":
+          description: Missing or expired bearer token
+        "404":
+          description: Repository not found, or not visible to the caller
+        "500":
+          description: Server error
+    put:
+      tags: [Repositories]
+      summary: Update a repository
+      description: >
+        `projectId` is stripped from the body, so a repository cannot be moved
+        into another project. Access is resolved and masked as for `GET`.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                githubId: { type: string }
+                name: { type: string }
+                projectId:
+                  type: integer
+                  description: Ignored; a repository cannot change project.
+      responses:
+        "200":
+          description: The updated repository
+        "401":
+          description: Missing or expired bearer token
+        "404":
+          description: Repository not found, or not visible to the caller
+        "500":
+          description: Server error
+    delete:
+      tags: [Repositories]
+      summary: Delete a repository
+      description: >
+        Stories referencing this repository have their `repositoryId` set to
+        null. Access is resolved and masked as for `GET`.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Deletion result message
+        "401":
+          description: Missing or expired bearer token
+        "404":
+          description: Repository not found, or not visible to the caller
+        "500":
+          description: Server error
 
   # ------------------------------------------------------------- Sprints ----
   /sprints:
     post:
       tags: [Sprints]
       summary: Create a sprint
+      description: >
+        The caller must belong to the project named by `projectId` in the body.
       security:
         - bearerAuth: []
       requestBody:
@@ -877,6 +1185,8 @@ paths:
           description: Missing required fields
         "401":
           description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of the target project
         "500":
           description: Error creating Sprint
 
@@ -889,6 +1199,9 @@ paths:
         recurrence pattern (Weekly = 7 days, Biweekly = 14, Monthly = 30), all
         sharing a generated `recurrenceGroupId`. Titles are suffixed with the
         sequence number.
+
+
+        The caller must belong to the project named by `projectId`.
       security:
         - bearerAuth: []
       requestBody:
@@ -920,6 +1233,8 @@ paths:
             recurrence pattern
         "401":
           description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of the target project
         "500":
           description: Error creating recurring Sprints
 
@@ -940,6 +1255,8 @@ paths:
           description: List of sprints
         "401":
           description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of this project
         "500":
           description: Error retrieving Sprints for project
 
@@ -952,7 +1269,9 @@ paths:
     get:
       tags: [Sprints]
       summary: Get a sprint by id
-      description: Includes the parent project and the sprint's stories.
+      description: >
+        Includes the parent project and the sprint's stories. The caller must
+        belong to the sprint's project.
       security:
         - bearerAuth: []
       responses:
@@ -960,6 +1279,8 @@ paths:
           description: The requested sprint
         "401":
           description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of the sprint's project
         "404":
           description: Sprint not found
         "500":
@@ -967,7 +1288,10 @@ paths:
     put:
       tags: [Sprints]
       summary: Update a sprint
-      description: The request body is passed straight to the model update.
+      description: >
+        The caller must belong to the sprint's project. `projectId` is stripped
+        from the body, so a sprint cannot be moved into another project; every
+        other supplied field is passed to the model update.
       security:
         - bearerAuth: []
       requestBody:
@@ -990,11 +1314,16 @@ paths:
                   enum: [Weekly, Biweekly, Monthly]
                   nullable: true
                 recurrenceGroupId: { type: string, nullable: true }
+                projectId:
+                  type: integer
+                  description: Ignored; a sprint cannot change project.
       responses:
         "200":
           description: The updated sprint
         "401":
           description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of the sprint's project
         "404":
           description: Sprint not found
         "500":
@@ -1002,7 +1331,9 @@ paths:
     delete:
       tags: [Sprints]
       summary: Delete a sprint
-      description: Stories in the sprint have their `sprintId` set to null.
+      description: >
+        Stories in the sprint have their `sprintId` set to null. The caller
+        must belong to the sprint's project.
       security:
         - bearerAuth: []
       responses:
@@ -1010,6 +1341,8 @@ paths:
           description: Deletion result message
         "401":
           description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of the sprint's project
         "404":
           description: Sprint not found
         "500":
@@ -1035,6 +1368,8 @@ paths:
           description: List of stories
         "401":
           description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of this project
         "500":
           description: Server error
     post:
@@ -1071,6 +1406,8 @@ paths:
           description: Missing required fields
         "401":
           description: Authentication required
+        "403":
+          description: Caller is not a member of this project
         "404":
           description: Project not found
         "500":
@@ -1092,7 +1429,11 @@ paths:
       description: >
         Includes state, type, repository, project, sprint, reporter, assignee,
         reviewer, acceptance criteria, comments and both directions of its
-        relations. `projectId` is not used to scope the lookup.
+        relations.
+
+
+        The story must belong to the project in the path; one that does not is
+        reported as `404`.
       security:
         - bearerAuth: []
       responses:
@@ -1100,17 +1441,20 @@ paths:
           description: The requested story
         "401":
           description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of this project
         "404":
-          description: Story not found
+          description: Story not found in this project
         "500":
           description: Error retrieving story
     put:
       tags: [Stories]
       summary: Update a story
       description: >
-        Only supplied fields are written. Moving the story into the project's
-        `completedState` stamps `completedAt`. Every changed field is recorded
-        as an activity change; new assignees and reviewers are emailed.
+        Only supplied fields are written. The story must belong to the project
+        in the path. Moving the story into the project's `completedState`
+        stamps `completedAt`. Every changed field is recorded as an activity
+        change; new assignees and reviewers are emailed.
       security:
         - bearerAuth: []
       requestBody:
@@ -1137,14 +1481,18 @@ paths:
           description: title, description or stateId was supplied but empty
         "401":
           description: Authentication required
+        "403":
+          description: Caller is not a member of this project
         "404":
-          description: Story not found
+          description: Story not found in this project
         "500":
           description: Error updating story
     delete:
       tags: [Stories]
       summary: Delete a story
-      description: Cascades to acceptance criteria, comments, relations and activity.
+      description: >
+        Cascades to acceptance criteria, comments, relations and activity. The
+        story must belong to the project in the path.
       security:
         - bearerAuth: []
       responses:
@@ -1152,8 +1500,10 @@ paths:
           description: Deletion result message
         "401":
           description: Authentication required
+        "403":
+          description: Caller is not a member of this project
         "404":
-          description: Story not found
+          description: Story not found in this project
         "500":
           description: Error deleting story
 
@@ -1203,6 +1553,8 @@ paths:
             already related
         "401":
           description: Authentication required
+        "403":
+          description: Caller is not a member of this project
         "500":
           description: Error creating relation
 
@@ -1211,8 +1563,9 @@ paths:
       tags: [Stories]
       summary: Delete a relation
       description: >
-        The relation is matched on `storyOneId`, so it can only be deleted from
-        the source story's side. Records an activity entry on both stories.
+        The story in the path must belong to the project, and the relation is
+        matched on `storyOneId`, so it can only be deleted from the source
+        story's side. Records an activity entry on both stories.
       security:
         - bearerAuth: []
       parameters:
@@ -1233,10 +1586,79 @@ paths:
           description: Deletion result message
         "401":
           description: Authentication required
+        "403":
+          description: Caller is not a member of this project
         "404":
-          description: Relation not found for this story
+          description: Story not found in this project, or relation not found for this story
         "500":
           description: Error deleting relation
+
+  # ------------------------------------------------------------- Backlog ----
+  /projects/{id}/backlog:
+    get:
+      tags: [Backlog]
+      summary: List a project's unsprinted stories
+      description: >
+        Stories in the project with no `sprintId`, each including its state,
+        type and assignee. Not filtered by state, since states are
+        user-customizable.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: List of backlog stories
+        "401":
+          description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of this project
+        "500":
+          description: Server error
+
+  /projects/{id}/backlog/{storyId}/sprint:
+    put:
+      tags: [Backlog]
+      summary: Assign a backlog story to a sprint
+      description: >
+        Both the story and the target sprint must belong to the project in the
+        path.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: storyId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sprintId]
+              properties:
+                sprintId: { type: integer }
+      responses:
+        "200":
+          description: Assignment result message
+        "400":
+          description: Missing sprintId
+        "401":
+          description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of this project
+        "404":
+          description: Story or sprint not found in this project
+        "500":
+          description: Error assigning Story to Sprint
 
   # -------------------------------------------------- Acceptance criteria ---
   /projects/{projectId}/stories/{storyId}/acceptanceCriteria:
@@ -1272,6 +1694,8 @@ paths:
           description: Missing title or status
         "401":
           description: Authentication required
+        "403":
+          description: Caller is not a member of this project
         "404":
           description: Story not found in this project
         "500":
@@ -1317,6 +1741,8 @@ paths:
           description: Missing title or status
         "401":
           description: Authentication required
+        "403":
+          description: Caller is not a member of this project
         "404":
           description: Story or criterion not found
         "500":
@@ -1332,6 +1758,8 @@ paths:
           description: Deletion result message
         "401":
           description: Authentication required
+        "403":
+          description: Caller is not a member of this project
         "404":
           description: Story or criterion not found
         "500":
@@ -1351,7 +1779,9 @@ paths:
     get:
       tags: [Comments]
       summary: List a story's comments
-      description: Each comment includes its author.
+      description: >
+        Each comment includes its author. The story must belong to the project
+        in the path.
       security:
         - bearerAuth: []
       responses:
@@ -1359,8 +1789,10 @@ paths:
           description: List of comments
         "401":
           description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of this project
         "404":
-          description: Story not found
+          description: Story not found in this project
         "500":
           description: Server error
     post:
@@ -1390,8 +1822,10 @@ paths:
           description: Missing content
         "401":
           description: Authentication required
+        "403":
+          description: Caller is not a member of this project
         "404":
-          description: Story not found
+          description: Story not found in this project
         "500":
           description: Error creating comment
 
@@ -1412,6 +1846,9 @@ paths:
     get:
       tags: [Comments]
       summary: List an acceptance criterion's comments
+      description: >
+        The story in the path must belong to the project before the criterion
+        is read.
       security:
         - bearerAuth: []
       responses:
@@ -1419,17 +1856,19 @@ paths:
           description: List of comments
         "401":
           description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of this project
         "404":
-          description: Acceptance criteria not found
+          description: Story not found in this project, or acceptance criteria not found
         "500":
           description: Server error
     post:
       tags: [Comments]
       summary: Comment on an acceptance criterion
       description: >
-        The activity entry is filed against the criterion's parent story.
-        Mentioned users are emailed with links to both the story and the
-        criterion.
+        The story in the path must belong to the project. The activity entry is
+        filed against the criterion's parent story. Mentioned users are emailed
+        with links to both the story and the criterion.
       security:
         - bearerAuth: []
       requestBody:
@@ -1448,8 +1887,10 @@ paths:
           description: Missing content
         "401":
           description: Authentication required
+        "403":
+          description: Caller is not a member of this project
         "404":
-          description: Acceptance criteria not found
+          description: Story not found in this project, or acceptance criteria not found
         "500":
           description: Error creating comment
 
@@ -1463,8 +1904,9 @@ paths:
       tags: [Comments]
       summary: Edit a comment
       description: >
-        Only the comment's author may edit it. No activity entry is recorded
-        for edits.
+        Only the comment's author may edit it — stricter than project
+        membership, so no separate membership check is made. No activity entry
+        is recorded for edits.
       security:
         - bearerAuth: []
       requestBody:
@@ -1479,9 +1921,11 @@ paths:
         "200":
           description: The updated comment
         "400":
-          description: Comment not found, or the caller is not its author
+          description: Comment not found
         "401":
           description: Authentication required
+        "403":
+          description: Caller is not the comment's author
         "500":
           description: Error updating comment
     delete:
@@ -1496,9 +1940,11 @@ paths:
         "200":
           description: Deletion result message
         "400":
-          description: Comment not found, or the caller is not its author
+          description: Comment not found
         "401":
           description: Authentication required
+        "403":
+          description: Caller is not the comment's author
         "500":
           description: Error deleting comment
 
@@ -1511,8 +1957,12 @@ paths:
         Newest first. Each entry includes the acting user, the story, and the
         per-attribute changes. Entries carry a `subjectType` of `story`,
         `acceptanceCriteria`, `comment` or `relation` plus a `metadata` blob so
-        they still render after the subject is deleted. This route has no
-        authentication middleware.
+        they still render after the subject is deleted.
+
+
+        The story must belong to the project in the path.
+      security:
+        - bearerAuth: []
       parameters:
         - name: projectId
           in: path
@@ -1525,71 +1975,114 @@ paths:
       responses:
         "200":
           description: Activity entries for the story
+        "401":
+          description: Missing or expired bearer token
+        "403":
+          description: Caller is not a member of this project
+        "404":
+          description: Story not found in this project
         "500":
-          description: Story not found, or another error occurred
+          description: Server error
+
   # -------------------------------------------------- Reference endpoints ---
+  # Every endpoint below returns an entire table and requires isAdmin.
   /stories:
     get:
       tags: [Reference / Read-only]
       summary: List every story in every project
+      security:
+        - bearerAuth: []
       responses:
         "200": { description: List of stories }
+        "401": { description: Authentication required }
+        "403": { description: Administrator access required }
         "500": { description: Server error }
 
   /relations:
     get:
       tags: [Reference / Read-only]
       summary: List every relation
+      security:
+        - bearerAuth: []
       responses:
         "200": { description: List of relations }
+        "401": { description: Authentication required }
+        "403": { description: Administrator access required }
         "500": { description: Server error }
 
   /acceptanceCriteria:
     get:
       tags: [Reference / Read-only]
       summary: List every acceptance criterion
+      security:
+        - bearerAuth: []
       responses:
         "200": { description: List of acceptance criteria }
+        "401": { description: Authentication required }
+        "403": { description: Administrator access required }
         "500": { description: Server error }
 
   /comments:
     get:
       tags: [Reference / Read-only]
       summary: List every comment
+      security:
+        - bearerAuth: []
       responses:
         "200": { description: List of comments }
+        "401": { description: Authentication required }
+        "403": { description: Administrator access required }
         "500": { description: Server error }
 
   /activities:
     get:
       tags: [Reference / Read-only]
       summary: List every activity entry
+      security:
+        - bearerAuth: []
       responses:
         "200": { description: List of activities }
+        "401": { description: Authentication required }
+        "403": { description: Administrator access required }
         "500": { description: Server error }
+
+  # GET /projectMembers is the same kind of administrator-only collection
+  # endpoint, but it is documented under the Project Members tag above.
 
   /storyStates:
     get:
       tags: [Reference / Read-only]
       summary: List every story state
+      security:
+        - bearerAuth: []
       responses:
         "200": { description: List of story states, ordered by `order` }
+        "401": { description: Authentication required }
+        "403": { description: Administrator access required }
         "500": { description: Server error }
 
   /storyTypes:
     get:
       tags: [Reference / Read-only]
       summary: List every story type
+      security:
+        - bearerAuth: []
       responses:
         "200": { description: List of story types }
+        "401": { description: Authentication required }
+        "403": { description: Administrator access required }
         "500": { description: Server error }
 
   /repositories:
     get:
       tags: [Reference / Read-only]
       summary: List every repository
+      security:
+        - bearerAuth: []
       responses:
         "200": { description: List of repositories }
+        "401": { description: Authentication required }
+        "403": { description: Administrator access required }
         "500": { description: Server error }
 
   /retrospectives:
@@ -1597,8 +2090,12 @@ paths:
       tags: [Reference / Read-only]
       summary: List every retrospective
       description: Retrospectives have no write endpoints yet.
+      security:
+        - bearerAuth: []
       responses:
         "200": { description: List of retrospectives }
+        "401": { description: Authentication required }
+        "403": { description: Administrator access required }
         "500": { description: Server error }
 
   /standups:
@@ -1606,8 +2103,12 @@ paths:
       tags: [Reference / Read-only]
       summary: List every standup
       description: Standups have no write endpoints yet.
+      security:
+        - bearerAuth: []
       responses:
         "200": { description: List of standups }
+        "401": { description: Authentication required }
+        "403": { description: Administrator access required }
         "500": { description: Server error }
 
 components:

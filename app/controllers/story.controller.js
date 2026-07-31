@@ -8,11 +8,7 @@ const Sprint = db.sprint;
 const AcceptanceCriteria = db.acceptanceCriteria;
 const Op = db.Sequelize.Op;
 const { httpError } = require("../utils/httpUtils");
-const {
-  requireAdmin,
-  requireProjectMember,
-  assertBelongsToProject,
-} = require("../authentication/authorization");
+const { requireAdmin, requireProjectMember, assertBelongsToProject } = require("../authentication/authorization");
 const {
   recordActivity,
   ACTIVITY_ACTION,
@@ -149,6 +145,28 @@ exports.findAllForProject = async (req, res) => {
         },
         { model: db.acceptanceCriteria, as: "acceptanceCriteria" },
         { model: db.comment, as: "comment" },
+        {
+          model: db.relation,
+          as: "relationOne",
+          include: [
+            {
+              model: db.story,
+              as: "storyTwo",
+              attributes: ["id", "title", "typeId", "stateId"],
+            },
+          ],
+        },
+        {
+          model: db.relation,
+          as: "relationTwo",
+          include: [
+            {
+              model: db.story,
+              as: "storyOne",
+              attributes: ["id", "title", "typeId", "stateId"],
+            },
+          ],
+        },
       ],
     });
     res.send(data);

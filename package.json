@@ -7,6 +7,8 @@
     "test": "jest",
     "test:coverage": "jest --coverage",
     "start": "node server.js",
+    "mcp": "node mcp/server.mjs",
+    "mcp:inspect": "npx @modelcontextprotocol/inspector node mcp/server.mjs -e NIMBLE_TOKEN=$NIMBLE_TOKEN",
     "init-db": "node scripts/init-db.js",
     "init-db:wipe": "node scripts/init-db.js --wipe",
     "init-db:keep": "node scripts/init-db.js --no-wipe",
@@ -33,6 +35,7 @@
   "author": "cs",
   "license": "ISC",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "auth-verify": "^1.14.1",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
@@ -48,6 +51,7 @@
     "pg-hstore": "^2.3.4",
     "resend": "^6.17.2",
     "sequelize": "^6.19.0",
-    "supertest": "^6.3.3"
+    "supertest": "^6.3.3",
+    "zod": "^4.4.3"
   }
 }
