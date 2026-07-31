@@ -4,22 +4,34 @@ module.exports = (app) => {
   var router = require("express").Router();
 
   // Retrieve all ProjectMember
-  router.get("/projectMembers/", ProjectMember.findAll);
+  router.get("/projectMembers/", authenticateRoute, ProjectMember.findAll);
 
   //Retrieve all ProjectMember for a specific user
-  router.get("/projectMembers/user/:userId", ProjectMember.findAllForUser);
+  router.get(
+    "/projectMembers/user/:userId",
+    authenticateRoute,
+    ProjectMember.findAllForUser,
+  );
 
-    //Retrieve all ProjectMember for a specific Project
-  router.get("/projectMembers/project/:projectId", ProjectMember.findAllForProject);
+  //Retrieve all ProjectMember for a specific Project
+  router.get(
+    "/projectMembers/project/:projectId",
+    authenticateRoute,
+    ProjectMember.findAllForProject,
+  );
 
   // Create a new ProjectMember
-  router.post("/projectMembers/:project/:member",/*authenticateRoute,*/ ProjectMember.create);
+  router.post(
+    "/projectMembers/:project/:member",
+    authenticateRoute,
+    ProjectMember.create,
+  );
 
   //Delete a ProjectMember
-  router.delete("/projectMembers/:id",/*authenticateRoute,*/ ProjectMember.delete);
+  router.delete("/projectMembers/:id", authenticateRoute, ProjectMember.delete);
 
   //Update a ProjectMember
-  router.put("/projectMembers/:id",/*authenticateRoute,*/ ProjectMember.update);
+  router.put("/projectMembers/:id", authenticateRoute, ProjectMember.update);
 
 
   app.use("/nimbleapi", router);

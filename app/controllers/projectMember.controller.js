@@ -4,14 +4,22 @@ const Op = db.Sequelize.Op;
 const User = db.user;
 const Project = db.project;
 const { authenticate } = require("../authentication/authentication");
+const {
+  requireAdmin,
+  requireSelfOrAdmin,
+  requireProjectMember,
+  requireMemberManagement,
+} = require("../authentication/authorization");
 const { httpError } = require("../utils/httpUtils");
 
 exports.findAll = async (req, res) => {
   try {
+    await requireAdmin(req.userId);
+
     const data = await ProjectMember.findAll();
     res.send(data);
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Something went wrong",
     });
   }
@@ -24,6 +32,8 @@ exports.create = async (req, res) => {
     if (!req.body.userId || !req.body.projectId || !req.body.isManager) {
       throw httpError("Missing required fields.", 400);
     }
+
+    await requireMemberManagement(userId, req.body.projectId);
 
     const projectMember = {
       userId: req.body.userId,
@@ -44,13 +54,14 @@ exports.create = async (req, res) => {
 exports.findAllForUser = async (req, res) => {
   try {
     const { userId } = await authenticate(req, res);
+    await requireSelfOrAdmin(userId, req.params.userId);
 
     const data = await ProjectMember.findAll({
         where: { userId: req.params.userId },
     });
     res.send(data);
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Error retrieving projectMembers for user.",
     });
   }
@@ -58,26 +69,30 @@ exports.findAllForUser = async (req, res) => {
 
 exports.findAllForProject = async (req, res) => {
   try {
-    //const { userId } = await authenticate(req, res);
+    const { userId } = await authenticate(req, res);
+    await requireProjectMember(userId, req.params.projectId);
 
     const data = await ProjectMember.findAll({
         where: { projectId: req.params.projectId },
     });
     res.send(data);
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Error retrieving projectMembers for user.",
     });
   }
 };
 
 exports.findOne = async (req, res) => {
+  const id = req.params.id;
   try {
-    const id = req.params.id;
+    const { userId } = await authenticate(req, res);
+
     const data = await ProjectMember.findByPk(id, {
     });
 
     if (data) {
+      await requireProjectMember(userId, data.projectId);
       res.send(data);
     } else {
       res.status(404).send({
@@ -85,7 +100,7 @@ exports.findOne = async (req, res) => {
       });
     }
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Error retrieving ProjectMember with id = " + id,
     });
   }
@@ -93,12 +108,14 @@ exports.findOne = async (req, res) => {
 
 exports.update = async (req, res) => {
   try {
-    await authenticate(req, res);
+    const { userId } = await authenticate(req, res);
 
     const projectMember = await ProjectMember.findByPk(req.params.id);
     if (!projectMember) {
       throw httpError(`Cannot find ProjectMember with id = ${req.params.id}.`, 404);
     }
+
+    await requireMemberManagement(userId, projectMember.projectId);
 
     const { isManager } = req.body;
     await projectMember.update({ isManager });
@@ -113,12 +130,14 @@ exports.update = async (req, res) => {
 
 exports.delete = async (req, res) => {
   try {
-    await authenticate(req, res);
+    const { userId } = await authenticate(req, res);
 
     const projectMember = await ProjectMember.findByPk(req.params.id);
     if (!projectMember) {
       throw httpError(`Cannot find ProjectMember with id = ${req.params.id}.`, 404);
     }
+
+    await requireMemberManagement(userId, projectMember.projectId);
 
     await projectMember.destroy();
     res.send({ message: "ProjectMember deleted successfully!" });

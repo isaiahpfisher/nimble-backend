@@ -1,3 +1,23 @@
+// Authorization is covered on its own in tests/authentication/authorization.test.js.
+// Here it is stubbed permissively so each controller test sees only the
+// controller's behaviour; the guard calls themselves are asserted per action.
+jest.mock("../../app/authentication/authorization", () => ({
+  isAdmin: jest.fn().mockResolvedValue(true),
+  requireAdmin: jest.fn().mockResolvedValue(undefined),
+  requireSelfOrAdmin: jest.fn().mockResolvedValue(undefined),
+  requireProjectMember: jest.fn().mockResolvedValue({ isManager: "1" }),
+  requireMemberManagement: jest.fn().mockResolvedValue({ isManager: "1" }),
+  assertBelongsToProject: jest.fn((record, projectId, label) => {
+    const owner = record && record.projectId;
+    if (owner == null || projectId == null || String(owner) !== String(projectId)) {
+      const error = new Error(`Cannot find ${label}.`);
+      error.statusCode = 404;
+      throw error;
+    }
+    return record;
+  }),
+}));
+
 // Activity-history coverage for the story controller: the created entry and
 // the field-level diff written on update.
 jest.mock("../../app/models", () => ({
@@ -81,6 +101,7 @@ function storyBody(overrides = {}) {
 function mockStory(attrs = {}) {
   const story = {
     id: 7,
+    projectId: "1",
     title: "Add login page",
     description: "Users need to sign in",
     priority: "HIGH",
@@ -189,7 +210,7 @@ describe("update", () => {
     const story = mockStory({ title: "Old title", estimate: 3 });
     Story.findByPk.mockResolvedValue(story);
     const req = {
-      params: { storyId: "7" },
+      params: { projectId: "1", storyId: "7" },
       body: storyBody({ title: "New title", estimate: 8, description: story.description }),
     };
 
@@ -220,7 +241,7 @@ describe("update", () => {
       Promise.resolve({ id, name: id === 3 ? "In Progress" : "Done" }),
     );
     const req = {
-      params: { storyId: "7" },
+      params: { projectId: "1", storyId: "7" },
       body: storyBody({ title: story.title, description: story.description, stateId: 4 }),
     };
 
@@ -243,7 +264,7 @@ describe("update", () => {
       Promise.resolve({ id, firstName: id === 8 ? "Grace" : "Ada", lastName: id === 8 ? "Hopper" : "Lovelace" }),
     );
     const req = {
-      params: { storyId: "7" },
+      params: { projectId: "1", storyId: "7" },
       body: storyBody({ title: story.title, description: story.description, assigneeId: 8 }),
     };
 
@@ -259,7 +280,7 @@ describe("update", () => {
     const story = mockStory({ assigneeId: 8 });
     Story.findByPk.mockResolvedValue(story);
     const req = {
-      params: { storyId: "7" },
+      params: { projectId: "1", storyId: "7" },
       body: storyBody({ title: story.title, description: story.description, assigneeId: null }),
     };
 
@@ -279,7 +300,7 @@ describe("update", () => {
     const body = storyBody({ title: story.title, description: story.description });
     delete body.reporterId;
 
-    await controller.update({ params: { storyId: "7" }, body }, mockRes());
+    await controller.update({ params: { projectId: "1", storyId: "7" }, body }, mockRes());
 
     expect(recordActivity).not.toHaveBeenCalled();
   });
@@ -290,7 +311,7 @@ describe("update", () => {
     const story = mockStory({ stateId: 3 });
     Story.findByPk.mockResolvedValue(story);
     const req = {
-      params: { storyId: "7" },
+      params: { projectId: "1", storyId: "7" },
       body: storyBody({ title: story.title, description: story.description, stateId: "3", typeId: "2" }),
     };
 
@@ -303,7 +324,7 @@ describe("update", () => {
     const story = mockStory();
     Story.findByPk.mockResolvedValue(story);
     const req = {
-      params: { storyId: "7" },
+      params: { projectId: "1", storyId: "7" },
       body: {
         title: story.title,
         description: story.description,
@@ -329,7 +350,7 @@ describe("update", () => {
   it("records the diff after the row is saved", async () => {
     const story = mockStory({ title: "Old title" });
     Story.findByPk.mockResolvedValue(story);
-    const req = { params: { storyId: "7" }, body: storyBody({ title: "New title" }) };
+    const req = { params: { projectId: "1", storyId: "7" }, body: storyBody({ title: "New title" }) };
 
     await controller.update(req, mockRes());
 
@@ -340,7 +361,7 @@ describe("update", () => {
     Story.findByPk.mockResolvedValue(null);
     const res = mockRes();
 
-    await controller.update({ params: { storyId: "99" }, body: storyBody() }, res);
+    await controller.update({ params: { projectId: "1", storyId: "99" }, body: storyBody() }, res);
 
     expect(recordActivity).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(404);
@@ -350,7 +371,7 @@ describe("update", () => {
     const story = mockStory({ title: "Old title" });
     Story.findByPk.mockResolvedValue(story);
     recordActivity.mockRejectedValue(new Error("history write failed"));
-    const req = { params: { storyId: "7" }, body: storyBody({ title: "New title" }) };
+    const req = { params: { projectId: "1", storyId: "7" }, body: storyBody({ title: "New title" }) };
     const res = mockRes();
 
     await controller.update(req, res);

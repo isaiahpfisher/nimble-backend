@@ -4,6 +4,7 @@ const Story = db.story;
 const User = db.user;
 const Op = db.Sequelize.Op;
 const { httpError } = require("../utils/httpUtils");
+const { requireAdmin, requireProjectMember } = require("../authentication/authorization");
 
 // helper functions for validation
 async function findStoryOrFail(id, projectId) {
@@ -18,10 +19,12 @@ async function findStoryOrFail(id, projectId) {
 
 exports.findAll = async (req, res) => {
   try {
+    await requireAdmin(req.userId);
+
     const data = await Activity.findAll();
     res.send(data);
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Something went wrong",
     });
   }
@@ -31,6 +34,7 @@ exports.findAllForStory = async (req, res) => {
   const { projectId, storyId } = req.params;
 
   try {
+    await requireProjectMember(req.userId, projectId);
     const story = await findStoryOrFail(storyId, req.params.projectId);
 
     const data = await Activity.findAll({
@@ -56,7 +60,7 @@ exports.findAllForStory = async (req, res) => {
 
     res.send(data);
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Something went wrong",
     });
   }

@@ -4,13 +4,19 @@ const Story = db.story;
 const Op = db.Sequelize.Op;
 const Sequelize = db.Sequelize;
 const { httpError } = require("../utils/httpUtils");
+const {
+  requireAdmin,
+  requireProjectMember,
+} = require("../authentication/authorization");
 
 exports.findAll = async (req, res) => {
   try {
+    await requireAdmin(req.userId);
+
     const data = await StoryType.findAll();
     res.send(data);
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Something went wrong",
     });
   }
@@ -19,6 +25,8 @@ exports.findAll = async (req, res) => {
 exports.findAllForProject = async (req, res) => {
   const { projectId } = req.params;
   try {
+    await requireProjectMember(req.userId, projectId);
+
     const data = await StoryType.findAll({
       where: { projectId },
       include: {
@@ -29,7 +37,7 @@ exports.findAllForProject = async (req, res) => {
 
     res.send(data);
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Something went wrong",
     });
   }
@@ -39,6 +47,8 @@ exports.create = async (req, res) => {
   const { projectId } = req.params;
 
   try {
+    await requireProjectMember(req.userId, projectId);
+
     if (!req.body.name) {
       throw httpError("Missing required fields.", 400);
     }
@@ -68,6 +78,8 @@ exports.update = async (req, res) => {
   const { projectId, typeId } = req.params;
 
   try {
+    await requireProjectMember(req.userId, projectId);
+
     if (!req.body.name) {
       throw httpError("Missing required fields.", 400);
     }
@@ -102,6 +114,8 @@ exports.delete = async (req, res) => {
   const { projectId, typeId } = req.params;
 
   try {
+    await requireProjectMember(req.userId, projectId);
+
     const type = await StoryType.findOne({
       where: { id: typeId, projectId },
     });

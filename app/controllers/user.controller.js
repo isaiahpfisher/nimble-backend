@@ -4,6 +4,7 @@ const Session = db.session;
 const Op = db.Sequelize.Op;
 const { encrypt, getSalt, hashPassword } = require("../authentication/crypto");
 const { authenticate } = require("../authentication/authentication");
+const { isAdmin, requireAdmin, requireSelfOrAdmin } = require("../authentication/authorization");
 const { httpError } = require("../utils/httpUtils");
 
 // Create and Save a new User
@@ -96,13 +97,17 @@ exports.findAll = async (req, res) => {
   var condition = id ? { id: { [Op.like]: `%${id}%` } } : null;
 
   try {
+    if (!req.userId) {
+      throw httpError("Authentication required.", 401);
+    }
+
     const data = await User.findAll({
       where: condition,
       attributes: ["id", "isAdmin", "firstName", "lastName", "email"],
     });
     res.send(data);
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Some error occurred while retrieving users.",
     });
   }
@@ -113,6 +118,10 @@ exports.findOne = async (req, res) => {
   const id = req.params.id;
 
   try {
+    if (!req.userId) {
+      throw httpError("Authentication required.", 401);
+    }
+
     const data = await User.findByPk(id, {
       attributes: ["id", "isAdmin", "firstName", "lastName", "email"],
     });
@@ -124,7 +133,7 @@ exports.findOne = async (req, res) => {
       });
     }
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Error retrieving User with id = " + id,
     });
   }
@@ -135,6 +144,8 @@ exports.findByEmail = async (req, res) => {
   const email = req.params.email;
 
   try {
+    await requireAdmin(req.userId);
+
     const data = await User.findOne({
       where: {
         email: email,
@@ -149,7 +160,7 @@ exports.findByEmail = async (req, res) => {
       });*/
     }
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Error retrieving User with email=" + email,
     });
   }
@@ -157,15 +168,25 @@ exports.findByEmail = async (req, res) => {
 
 exports.update = async (req, res) => {
   try {
-    await authenticate(req, res);
+    const { userId } = await authenticate(req, res);
+    await requireSelfOrAdmin(userId, req.params.id);
 
     const user = await User.findByPk(req.params.id);
     if (!user) {
       throw httpError(`Cannot find user with id = ${req.params.id}.`, 404);
     }
 
-    const { firstName, lastName, email, isAdmin } = req.body;
-    const updatedUser = { firstName, lastName, email, isAdmin };
+    const { firstName, lastName, email } = req.body;
+    const updatedUser = { firstName, lastName, email };
+
+    // only allow admins to make other people admins
+    if (!!req.body.isAdmin) {
+      if (!(await isAdmin(userId))) {
+        throw httpError("Administrator access required.", 403);
+      }
+      updatedUser.isAdmin = req.body.isAdmin;
+    }
+
     await user.update(updatedUser);
 
     res.send(updatedUser);
@@ -181,6 +202,9 @@ exports.delete = async (req, res) => {
   const id = req.params.id;
 
   try {
+    const { userId } = await authenticate(req, res);
+    await requireSelfOrAdmin(userId, id);
+
     const number = await User.destroy({
       where: { id: id },
     });
@@ -194,7 +218,7 @@ exports.delete = async (req, res) => {
       });
     }
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Could not delete User with id = " + id,
     });
   }
@@ -203,13 +227,16 @@ exports.delete = async (req, res) => {
 // Delete all People from the database.
 exports.deleteAll = async (req, res) => {
   try {
+    const { userId } = await authenticate(req, res);
+    await requireAdmin(userId);
+
     const number = await User.destroy({
       where: {},
       truncate: false,
     });
     res.send({ message: `${number} People were deleted successfully!` });
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Some error occurred while removing all people.",
     });
   }
