@@ -16,9 +16,11 @@ const SERVER_PATH = path.join(__dirname, "..", "..", "mcp", "server.mjs");
  * unclosed transport leaves an orphaned node process behind, and on a
  * long-lived server those accumulate until it runs out of memory.
  *
- * @param {string} token  bearer token of the user the assistant acts as
+ * @param {string} token   bearer token of the user the assistant acts as
+ * @param {number} userId  that user's id; the API has no /users/me, so tools
+ *                         answering "what is assigned to me" need it passed in
  */
-async function connectAsUser(token) {
+async function connectAsUser(token, userId) {
   const transport = new StdioClientTransport({
     command: process.execPath, // the same node binary running this process
     args: [SERVER_PATH],
@@ -26,6 +28,7 @@ async function connectAsUser(token) {
       // a bare env: the child needs nothing from this process except these
       PATH: process.env.PATH,
       NIMBLE_TOKEN: token,
+      NIMBLE_USER_ID: String(userId),
       NIMBLE_API_URL:
         process.env.NIMBLE_API_URL ||
         `http://localhost:${process.env.PORT || 3200}/nimbleapi`,

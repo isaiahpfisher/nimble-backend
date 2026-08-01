@@ -8,7 +8,7 @@
     "test:coverage": "jest --coverage",
     "start": "node server.js",
     "mcp": "node mcp/server.mjs",
-    "mcp:inspect": "npx @modelcontextprotocol/inspector node mcp/server.mjs -e NIMBLE_TOKEN=$NIMBLE_TOKEN",
+    "mcp:inspect": "npx @modelcontextprotocol/inspector node mcp/server.mjs -e NIMBLE_TOKEN=$NIMBLE_TOKEN -e NIMBLE_USER_ID=$NIMBLE_USER_ID",
     "init-db": "node scripts/init-db.js",
     "init-db:wipe": "node scripts/init-db.js --wipe",
     "init-db:keep": "node scripts/init-db.js --no-wipe",
