@@ -34,6 +34,8 @@ services:
       CORS_ORIGIN: http://localhost:8081
       RESEND_API_KEY: ${RESEND_API_KEY}
       BASE_FRONTEND_URL: http://localhost:8081/nimble-frontend
+      COHERE_API_KEY: ${COHERE_API_KEY}
+      COHERE_MODEL: ${COHERE_MODEL:-command-r7b-12-2024}
     ports:
       - "3200:3200"
     depends_on:

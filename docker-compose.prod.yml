@@ -24,6 +24,8 @@ services:
       CORS_ORIGIN: ${CORS_ORIGIN} # public site URL (belt-and-suspenders; proxy is same-origin)
       RESEND_API_KEY: ${RESEND_API_KEY}
       BASE_FRONTEND_URL: ${BASE_FRONTEND_URL} # used to build links in outbound emails
+      COHERE_API_KEY: ${COHERE_API_KEY} # assistant; the route 503s without it
+      COHERE_MODEL: ${COHERE_MODEL:-command-r7b-12-2024}
     expose:
       - "3200" # visible to the frontend container only, NOT the host/internet
 
