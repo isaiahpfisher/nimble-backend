@@ -35,7 +35,7 @@ services:
       RESEND_API_KEY: ${RESEND_API_KEY}
       BASE_FRONTEND_URL: http://localhost:8081/nimble-frontend
       COHERE_API_KEY: ${COHERE_API_KEY}
-      COHERE_MODEL: ${COHERE_MODEL:-command-a-03-2025}
+      COHERE_MODEL: ${COHERE_MODEL:-command-a-plus-05-2026}
     ports:
       - "3200:3200"
     depends_on:

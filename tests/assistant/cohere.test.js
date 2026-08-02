@@ -1,5 +1,6 @@
 const {
   ask,
+  backoffFor,
   packResult,
   readText,
   recoverToolCalls,
@@ -126,6 +127,9 @@ describe("recoverToolCalls", () => {
 describe("ask", () => {
   const request = { model: "m", messages: [], tools: [] };
 
+  // the retry policy is exercised without sleeping through it
+  const noWait = () => ({ wait: jest.fn(async () => {}) });
+
   it("returns the assistant message", async () => {
     const cohere = { chat: jest.fn(async () => ({ message: { content: "hi" } })) };
 
@@ -140,24 +144,77 @@ describe("ask", () => {
       chat: jest.fn().mockRejectedValueOnce(emptyGeneration()).mockResolvedValue({ message: { content: "ok" } }),
     };
 
-    await expect(ask(cohere, request)).resolves.toEqual({ content: "ok" });
+    await expect(ask(cohere, request, noWait())).resolves.toEqual({ content: "ok" });
     expect(cohere.chat).toHaveBeenCalledTimes(2);
   });
 
   it("retries a rate limit but not a bad request", async () => {
     const limited = { chat: jest.fn().mockRejectedValueOnce(error(429)).mockResolvedValue({ message: {} }) };
-    await expect(ask(limited, request)).resolves.toEqual({});
+    await expect(ask(limited, request, noWait())).resolves.toEqual({});
     expect(limited.chat).toHaveBeenCalledTimes(2);
 
     const bad = { chat: jest.fn().mockRejectedValue(error(400, "malformed")) };
-    await expect(ask(bad, request)).rejects.toThrow("malformed");
+    await expect(ask(bad, request, noWait())).rejects.toThrow("malformed");
     expect(bad.chat).toHaveBeenCalledTimes(1);
   });
 
   it("gives up after the last attempt and throws what it saw", async () => {
     const cohere = { chat: jest.fn().mockRejectedValue(emptyGeneration()) };
 
-    await expect(ask(cohere, request)).rejects.toMatchObject({ statusCode: 422 });
-    expect(cohere.chat).toHaveBeenCalledTimes(3);
+    await expect(ask(cohere, request, noWait())).rejects.toMatchObject({ statusCode: 422 });
+    expect(cohere.chat).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe("backoffFor", () => {
+  // A rate limit is counted per minute; the old policy waited 250ms and then
+  // 500ms, which never outlasted one and burned every retry finding that out.
+  it("waits seconds, not milliseconds, for a rate limit", () => {
+    expect(backoffFor(error(429), 1)).toBeGreaterThanOrEqual(2500);
+  });
+
+  it("backs off further on each successive attempt", () => {
+    const first = backoffFor(error(503), 1);
+    const third = backoffFor(error(503), 3);
+    expect(third).toBeGreaterThan(first);
+  });
+
+  it("does not dawdle over an empty generation, which is not throttling", () => {
+    expect(backoffFor(emptyGeneration(), 1)).toBeLessThan(1000);
+  });
+
+  it("honours the server's own Retry-After over its own guess", () => {
+    const err = Object.assign(error(429), { headers: { "retry-after": "2" } });
+    expect(backoffFor(err, 1)).toBe(2000);
+  });
+
+  it("caps the wait so a bad Retry-After cannot hang the request", () => {
+    const err = Object.assign(error(429), { headers: { "retry-after": "9999" } });
+    expect(backoffFor(err, 1)).toBeLessThanOrEqual(30000);
+  });
+});
+
+describe("retrying a network failure", () => {
+  // A dropped connection arrives with no statusCode at all, so the old
+  // status-only test treated a blip as fatal.
+  const dropped = (message) => new Error(message);
+
+  it.each(["fetch failed", "socket hang up", "read ECONNRESET"])(
+    "retries after %s",
+    async (message) => {
+      const cohere = {
+        chat: jest.fn().mockRejectedValueOnce(dropped(message)).mockResolvedValue({ message: { content: "ok" } }),
+      };
+
+      await expect(ask(cohere, { model: "m" }, { wait: async () => {} })).resolves.toEqual({ content: "ok" });
+      expect(cohere.chat).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("still gives up on an error that is genuinely ours", async () => {
+    const cohere = { chat: jest.fn().mockRejectedValue(dropped("tools[0] is malformed")) };
+
+    await expect(ask(cohere, { model: "m" }, { wait: async () => {} })).rejects.toThrow("malformed");
+    expect(cohere.chat).toHaveBeenCalledTimes(1);
   });
 });

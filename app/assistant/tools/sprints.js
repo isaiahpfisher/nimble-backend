@@ -56,11 +56,41 @@ module.exports = [
       "Where a sprint actually stands: points done and remaining, how far through the sprint it is, and " +
       'whether that is ahead of or behind the straight line to zero. This is the tool for "how is the ' +
       'sprint going", "are we going to finish", "how much is left" and "what is still open".\n\n' +
+      "Pass `projectId` alone and it reads that project's active sprint, which is what an unqualified " +
+      '"the sprint" means — do not call list_sprints first to find it. Add `sprintId` only when the ' +
+      "user means a specific other sprint.\n\n" +
       "Progress is measured in points, the same way the burndown chart is, so a sprint with unestimated " +
       "stories is measured incompletely — `unestimatedStories` says how many, and you should mention it " +
       "when it is not zero. `pointsBehindSchedule` is negative when the sprint is ahead.",
-    input: z.object({ sprintId: num("Id of the sprint, from list_sprints.") }),
-    async run({ sprintId }, { api }) {
+    input: z.object({
+      projectId: num("Id of the project whose sprint you mean."),
+      sprintId: num("A specific sprint. Omit for the project's active one, which is the usual case.").optional(),
+    }),
+    async run({ projectId, sprintId }, { api }) {
+      if (sprintId === undefined) {
+        const sprints = await api(`/projects/${projectId}/sprints`);
+        const active = sprints.filter((s) => s.status === "Active");
+
+        if (active.length === 0) {
+          throw new Error(
+            sprints.length
+              ? `Project ${projectId} has no active sprint. Its sprints are: ` +
+                `${sprints.map((s) => `${s.id} = ${s.title} (${s.status})`).join(", ")}.`
+              : `Project ${projectId} has no sprints yet.`,
+          );
+        }
+
+        // a project is meant to have one at a time, but nothing enforces it
+        if (active.length > 1) {
+          throw new Error(
+            `Project ${projectId} has more than one active sprint: ` +
+              `${active.map((s) => `${s.id} = ${s.title}`).join(", ")}. Which one?`,
+          );
+        }
+
+        sprintId = active[0].id;
+      }
+
       const sprint = await api(`/sprints/${sprintId}`);
       const stories = sprint.story ?? [];
       const project = await api(`/projects/${sprint.projectId}`);

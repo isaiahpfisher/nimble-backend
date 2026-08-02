@@ -44,6 +44,22 @@ function readMessages(body) {
   return clean;
 }
 
+// The id we handed back last time. It only ever selects a conversation of this
+// caller's own (sessions.js keys on the user id too), so an unknown or borrowed
+// one simply starts a fresh exchange rather than reaching anybody else's.
+const CONVERSATION_ID = /^[0-9a-f-]{36}$/i;
+
+function readConversationId(body) {
+  const value = body?.conversationId;
+  if (value === undefined || value === null) return null;
+
+  if (typeof value !== "string" || !CONVERSATION_ID.test(value)) {
+    throw httpError("conversationId is not valid.", 400);
+  }
+
+  return value;
+}
+
 function readContext(body) {
   const context = {};
 
@@ -93,13 +109,19 @@ exports.chat = async (req, res) => {
 
     const messages = readMessages(req.body);
     const context = readContext(req.body);
+    const conversationId = readConversationId(req.body);
     const token = callerToken(req);
 
     const user = await User.findByPk(req.userId, { attributes: ["id", "firstName", "lastName"] });
 
-    const { reply, toolCalls } = await runChat({ token, user, messages, context });
+    const answer = await runChat({ token, user, messages, context, conversationId });
 
-    res.send({ reply, toolCalls });
+    res.send({
+      reply: answer.reply,
+      toolCalls: answer.toolCalls,
+      // the client hands this back next time so the model keeps what it saw
+      conversationId: answer.conversationId,
+    });
   } catch (err) {
     console.error("Assistant chat failed:", err);
     const { status, message } = errorResponse(err);

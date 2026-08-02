@@ -498,3 +498,65 @@ describe("moving several stories", () => {
     expect(outcome.result.stories.at(-1)).toMatchObject({ ok: false, storyId: 9 });
   });
 });
+
+describe("how a sprint is going", () => {
+  // "how is the sprint going" is about the sprint that is running now. Making
+  // the model find that id first cost a turn and, on the smaller model, was
+  // where the answer was lost altogether.
+  const sprints = [
+    { id: 50, projectId: 1, title: "Sprint 6", status: "Completed", startDate: "2026-07-13", endDate: "2026-07-26" },
+    { id: 51, projectId: 1, title: "Sprint 7", status: "Active", startDate: "2026-07-27", endDate: "2026-08-09" },
+    { id: 52, projectId: 1, title: "Sprint 8", status: "Planned", startDate: "2026-08-10", endDate: "2026-08-23" },
+  ];
+
+  const withSprints = (rows = sprints, extra = {}) =>
+    mockApi({
+      "GET /projects/1": project,
+      "GET /projects/1/sprints": rows,
+      "GET /sprints/51": { ...sprints[1], story: [] },
+      "GET /sprints/52": { ...sprints[2], story: [] },
+      ...extra,
+    });
+
+  it("reads the active sprint from the project alone", async () => {
+    const api = withSprints();
+    const outcome = await runTool("get_sprint_progress", { projectId: 1 }, { api, userId: 5 });
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.result).toMatchObject({ id: 51, title: "Sprint 7" });
+    expect(api).toHaveBeenCalledWith("/sprints/51");
+  });
+
+  it("uses an explicit sprintId without looking for the active one", async () => {
+    const api = withSprints();
+    const outcome = await runTool("get_sprint_progress", { projectId: 1, sprintId: 52 }, { api, userId: 5 });
+
+    expect(outcome.result).toMatchObject({ id: 52 });
+    expect(api).not.toHaveBeenCalledWith("/projects/1/sprints");
+  });
+
+  it("lists the real sprints when none is active, rather than failing blankly", async () => {
+    const api = withSprints([sprints[0], sprints[2]]);
+    const outcome = await runTool("get_sprint_progress", { projectId: 1 }, { api, userId: 5 });
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error).toContain("no active sprint");
+    expect(outcome.error).toContain("50 = Sprint 6");
+    expect(outcome.error).toContain("52 = Sprint 8");
+  });
+
+  it("says so plainly when the project has no sprints at all", async () => {
+    const outcome = await runTool("get_sprint_progress", { projectId: 1 }, { api: withSprints([]), userId: 5 });
+
+    expect(outcome.error).toContain("no sprints yet");
+  });
+
+  // nothing in the schema enforces one at a time
+  it("asks which when more than one sprint is active", async () => {
+    const two = [sprints[1], { ...sprints[2], status: "Active" }];
+    const outcome = await runTool("get_sprint_progress", { projectId: 1 }, { api: withSprints(two), userId: 5 });
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error).toContain("more than one active sprint");
+  });
+});

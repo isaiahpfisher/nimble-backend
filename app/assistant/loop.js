@@ -8,7 +8,14 @@
 
 const { buildSystemPrompt } = require("./prompt");
 const { collectEntities, linkTitles, noEntities, publishedUrls, verifyLinks } = require("./links");
-const { DEFAULT_MODEL, ask, packResult, readText, toolDefinitions } = require("./cohere");
+const {
+  DEFAULT_MODEL,
+  ask,
+  packResult,
+  readText,
+  readToolResult,
+  toolDefinitions,
+} = require("./cohere");
 
 // Each turn is another paid round trip, and a model that misreads a tool result
 // can ping-pong indefinitely. Cap it, and say when the cap is what stopped us.
@@ -37,6 +44,10 @@ function parseArguments(text) {
  * @param {Array}    options.messages  the visible exchange, oldest first
  * @param {object}   options.user      the user being helped
  * @param {object}  [options.context]  what is on screen ({projectId, storyId, sprintId})
+ * @param {Array}   [options.priorHistory]  the stored exchange, tool results and
+ *                                   all, from app/assistant/sessions.js. When
+ *                                   present it replaces `messages`, which the
+ *                                   client sends stripped of everything but prose.
  */
 async function runConversation({
   cohere,
@@ -45,32 +56,55 @@ async function runConversation({
   messages,
   user,
   context = {},
+  priorHistory = null,
   model = DEFAULT_MODEL,
   maxTurns = DEFAULT_MAX_TURNS,
 }) {
   const definitions = toolDefinitions(tools);
   const writes = new Set(tools.filter((tool) => tool.write).map((tool) => tool.name));
 
+  // A remembered conversation already holds every earlier turn, so only the
+  // newest question is added to it. Without one, the client's prose is all
+  // there is.
+  const opening = priorHistory ? [...priorHistory, messages.at(-1)] : [...messages];
+
   // slot 0 is the system prompt, rewritten every turn so the record of what has
   // been done so far is always current
-  const history = [null, ...messages];
+  const history = [null, ...opening];
 
   const done = [];
-  // every story, project and sprint this turn has been shown. The urls are
-  // seeded with links from earlier answers, so a follow-up that repeats one
-  // keeps it even when this turn runs no tool.
+  // Every story, project and sprint this turn has been shown. Seeded from what
+  // earlier turns produced — the links already published, and, when the
+  // conversation was remembered, the tool results those links came from — so a
+  // follow-up that names one keeps it clickable without running a tool again.
   const entities = noEntities();
-  publishedUrls(messages, entities.urls);
+  publishedUrls(opening, entities.urls);
+  for (const message of opening) {
+    if (message.role === "tool") collectEntities(readToolResult(message), entities);
+  }
   let lastText = "";
 
   // Verify before linking, so a target just rejected cannot be reintroduced by
   // its title.
-  const answer = (reply, stoppedBecause, turns) => ({
-    reply: linkTitles(verifyLinks(reply, entities.urls), entities.titles),
-    toolCalls: done,
-    turns,
-    stoppedBecause,
-  });
+  const answer = (reply, stoppedBecause, turns) => {
+    const finished = linkTitles(verifyLinks(reply, entities.urls), entities.titles);
+
+    // What to store for next time: everything but the system prompt, which is
+    // rebuilt each turn. The reply is recorded as the user actually saw it —
+    // links repaired — so a follow-up refers to the same text they read.
+    const stored = history.slice(1);
+    const last = stored.at(-1);
+
+    if (last?.role === "assistant" && last.content) {
+      // the model's own closing turn, already in the history
+      stored[stored.length - 1] = { ...last, content: finished };
+    } else {
+      // it ran out of turns or fell over, so nothing said this yet
+      stored.push({ role: "assistant", content: finished });
+    }
+
+    return { reply: finished, toolCalls: done, turns, stoppedBecause, history: stored };
+  };
 
   for (let turn = 1; turn <= maxTurns; turn += 1) {
     history[0] = { role: "system", content: buildSystemPrompt({ user, tools, context, done }) };

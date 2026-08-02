@@ -6,7 +6,12 @@
 
 const { httpError } = require("../utils/httpUtils");
 
-const DEFAULT_MODEL = "command-a-03-2025";
+// Command A+ over Command A, on measured behaviour rather than the spec sheet:
+// against the eval fixture the older model dropped a required argument it had
+// been given in the prompt (`list_sprints({})` while looking straight at a
+// project), then apologised instead of correcting. Overriding with
+// COHERE_MODEL still works if a cheaper model is wanted.
+const DEFAULT_MODEL = "command-a-plus-05-2026";
 
 // Failures worth one more try rather than an apology: rate limits, gateway
 // blips, and the odd turn where the model emits neither a tool call nor a
@@ -17,9 +22,52 @@ const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 const isEmptyGeneration = (err) =>
   err?.statusCode === 422 && String(err?.message ?? "").includes("NO_TOOL_CALL_OR_RESPONSE_GENERATED");
 
-const worthRetrying = (err) => isEmptyGeneration(err) || RETRYABLE_STATUS.has(err?.statusCode);
+// A connection that dropped or never opened carries no status at all — Node
+// reports it as a bare "fetch failed" — so a status-only test called it fatal
+// and gave up on a blip that a second attempt would have sailed through.
+const NETWORK_FAILURE = /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|network/i;
+
+const isNetworkFailure = (err) =>
+  err?.statusCode === undefined && NETWORK_FAILURE.test(String(err?.message ?? ""));
+
+const worthRetrying = (err) =>
+  isEmptyGeneration(err) || isNetworkFailure(err) || RETRYABLE_STATUS.has(err?.statusCode);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The server's own `Retry-After`, in milliseconds, if it sent one.
+ *
+ * The SDK surfaces headers in more than one place depending on how the failure
+ * was raised, so all the plausible ones are checked rather than assuming.
+ */
+function retryAfterMs(err) {
+  const headers = err?.headers ?? err?.rawResponse?.headers ?? err?.response?.headers;
+  const value = typeof headers?.get === "function" ? headers.get("retry-after") : headers?.["retry-after"];
+
+  const seconds = Number(value);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null;
+}
+
+// A rate limit is counted per minute, so the old 250ms-then-500ms backoff was
+// always going to come back to the same closed door — it just burned the
+// retries doing it. An empty generation is the opposite: nothing is throttled,
+// the same request usually works immediately, and waiting a second is waste.
+const EMPTY_GENERATION_BACKOFF = 300;
+const RATE_LIMIT_BACKOFF = 5000;
+const BACKOFF_CEILING = 30000;
+
+/** How long to wait before attempt number `attempt + 1`. */
+function backoffFor(err, attempt) {
+  const stated = retryAfterMs(err);
+  if (stated) return Math.min(stated, BACKOFF_CEILING);
+
+  if (isEmptyGeneration(err)) return EMPTY_GENERATION_BACKOFF * attempt;
+
+  // exponential, with jitter so a burst of requests does not retry in lockstep
+  const base = Math.min(RATE_LIMIT_BACKOFF * 2 ** (attempt - 1), BACKOFF_CEILING);
+  return Math.round(base * (0.5 + Math.random() / 2));
+}
 
 let client = null;
 
@@ -137,17 +185,39 @@ const packResult = (name, outcome) =>
   JSON.stringify(outcome.ok ? { tool: name, result: outcome.result } : { tool: name, error: outcome.error });
 
 /**
+ * The result inside a stored tool message, or null if it recorded a failure.
+ *
+ * The inverse of packResult, for reading a remembered conversation back —
+ * chiefly so the stories an earlier turn was shown are still linkable now.
+ */
+function readToolResult(message) {
+  const text = (message?.content ?? [])
+    .filter((part) => part?.type === "text")
+    .map((part) => part.text)
+    .join("");
+
+  try {
+    return JSON.parse(text)?.result ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * One chat request, with the retries that make a transient provider failure
  * invisible instead of fatal. Returns the assistant message.
+ *
+ * `wait` is injectable so the tests can exercise the retry policy without
+ * actually sleeping through a rate limit's backoff.
  */
-async function ask(cohere, request, { attempts = 3 } = {}) {
+async function ask(cohere, request, { attempts = 4, wait = sleep } = {}) {
   for (let attempt = 1; ; attempt += 1) {
     try {
       const response = await cohere.chat(request);
       return recoverToolCalls(response?.message ?? {});
     } catch (err) {
       if (attempt === attempts || !worthRetrying(err)) throw err;
-      await sleep(250 * attempt);
+      await wait(backoffFor(err, attempt));
     }
   }
 }
@@ -158,7 +228,9 @@ module.exports = {
   toolDefinitions,
   readText,
   packResult,
+  readToolResult,
   ask,
+  backoffFor,
   isEmptyGeneration,
   recoverToolCalls,
   toolCallsInText,

@@ -6,6 +6,7 @@
   "scripts": {
     "test": "jest",
     "test:coverage": "jest --coverage",
+    "eval": "node tests/eval/run.js",
     "start": "node server.js",
     "mcp": "node mcp/server.mjs",
     "mcp:inspect": "npx @modelcontextprotocol/inspector node mcp/server.mjs -e NIMBLE_TOKEN=$NIMBLE_TOKEN -e NIMBLE_USER_ID=$NIMBLE_USER_ID",

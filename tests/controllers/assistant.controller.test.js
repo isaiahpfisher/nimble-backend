@@ -46,6 +46,7 @@ beforeEach(() => {
     toolCalls: [{ name: "get_my_work", isWrite: false, isError: false }],
     turns: 2,
     stoppedBecause: "answered",
+    conversationId: "6f2e0fbc-d5a6-457d-8eaa-018456b94cc1",
   });
 });
 
@@ -60,8 +61,39 @@ describe("chat", () => {
     expect(res.send).toHaveBeenCalledWith({
       reply: "You have two stories in progress.",
       toolCalls: [{ name: "get_my_work", isWrite: false, isError: false }],
+      conversationId: "6f2e0fbc-d5a6-457d-8eaa-018456b94cc1",
     });
     expect(res.status).not.toHaveBeenCalled();
+  });
+
+  // The id is the client's handle on what the assistant has already seen. It
+  // selects only that user's own conversation (sessions.js keys on the user id
+  // too), so a bad one costs context rather than leaking any.
+  describe("the conversation it is carrying on", () => {
+    const withId = (conversationId) =>
+      mockReq({
+        body: { messages: [{ role: "user", content: "and the first one?" }], conversationId },
+      });
+
+    it("passes a stored id through", async () => {
+      const id = "6f2e0fbc-d5a6-457d-8eaa-018456b94cc1";
+      await controller.chat(withId(id), mockRes());
+
+      expect(runChat).toHaveBeenCalledWith(expect.objectContaining({ conversationId: id }));
+    });
+
+    it("starts a fresh one when none is sent", async () => {
+      await controller.chat(mockReq(), mockRes());
+
+      expect(runChat).toHaveBeenCalledWith(expect.objectContaining({ conversationId: null }));
+    });
+
+    it.each([["not-a-uuid"], [42], [{}], ["../../etc/passwd"]])("refuses %p", async (value) => {
+      const { status } = await reject(withId(value));
+
+      expect(status).toBe(400);
+      expect(runChat).not.toHaveBeenCalled();
+    });
   });
 
   it("passes the exchange, the user and their own token through", async () => {

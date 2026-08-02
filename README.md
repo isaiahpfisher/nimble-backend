@@ -83,3 +83,46 @@ npm run init-db:wipe
 ```
 npm run start
 ```
+
+## The assistant
+
+The in-app assistant lives in [`app/assistant/`](app/assistant/). It answers
+from tools rather than from memory, and every tool reaches the database through
+Nimble's own REST API using the caller's bearer token — so it can only ever see
+what that user could see by hand, and authorization stays in one place.
+
+Set `COHERE_API_KEY` in `.env` to switch it on; without one the route returns
+503 rather than failing at boot. `COHERE_MODEL` overrides the default model.
+
+```
+app/assistant/
+  index.js      runChat — the only entry point the rest of the app uses
+  loop.js       the agent loop: ask, run tools, ask again
+  prompt.js     standing instructions (cross-cutting policy only)
+  tools/        the tool registry — one Zod schema per tool, no second copy
+  mcp.js        Nimble as an MCP server, and the assistant as one of its clients
+  sessions.js   what the assistant remembers between requests
+  context.js    filling in the ids the page already knows
+```
+
+### Tools over MCP
+
+The same tools are served to outside clients over stdio, so Claude Desktop and
+the MCP inspector get exactly what the in-app assistant gets:
+
+```
+NIMBLE_TOKEN=<bearer token> NIMBLE_USER_ID=<id> npm run mcp
+npm run mcp:inspect
+```
+
+### Checking that it still works
+
+`npm test` covers the parts. To check that the assistant actually *answers*,
+run the eval — real prompt, real loop, real model, fake database:
+
+```
+npm run eval
+```
+
+See [`tests/eval/README.md`](tests/eval/README.md). It costs tokens, so it is
+not part of `npm test`.

@@ -151,6 +151,8 @@ describe("tool failures", () => {
     expect(cohere.chat.mock.calls[1][0].messages.at(-1).content[0].text).toMatch(/not valid JSON/);
   });
 
+  // 400 rather than 500 only so the test does not sit through the retry
+  // backoff; the loop does not look at the status, it just catches.
   it("keeps an answer it already had when the model then collapses", async () => {
     const cohere = {
       chat: jest
@@ -158,7 +160,7 @@ describe("tool failures", () => {
         .mockResolvedValueOnce({
           message: { content: "Found [Login](/projects/1/stories/7).", toolCalls: [toolCall("c1", "get_story")] },
         })
-        .mockRejectedValue(Object.assign(new Error("boom"), { statusCode: 500 })),
+        .mockRejectedValue(Object.assign(new Error("boom"), { statusCode: 400 })),
     };
 
     const result = await run({
@@ -287,16 +289,20 @@ describe("the system prompt", () => {
     expect(promptOn(cohere)).not.toMatch(/They have story \d/);
   });
 
-  it("gives the house style for the prose it composes, but only when it can write", async () => {
+  // The prompt carries the policy — write the prose, do not echo the title —
+  // while the exact shape lives on the tool field the model is filling in (see
+  // "the description formats" in tools.test.js). One rule, one place.
+  it("tells it to write the prose without restating the format the tools carry", async () => {
     const writable = mockCohere({ content: "ok" });
     await run({ cohere: writable, tools: [READ, WRITE] });
 
-    expect(promptOn(writable)).toContain("As a <who>, when I <when>, I want to <what>, so that <why>.");
-    expect(promptOn(writable)).toContain("Given <starting state>, when <action>, then <observable result>.");
+    expect(promptOn(writable)).toMatch(/in the shape that tool describes/);
+    expect(promptOn(writable)).toMatch(/[Nn]ever repeat the title\s+back as the description/);
+    expect(promptOn(writable)).not.toContain("As a <who>, when I <when>");
 
     const readOnly = mockCohere({ content: "ok" });
     await run({ cohere: readOnly, tools: [READ] });
-    expect(promptOn(readOnly)).not.toMatch(/How to write a description/);
+    expect(promptOn(readOnly)).not.toMatch(/Take the defaults/);
   });
 
   it("claims write access only when a write tool exists", async () => {
@@ -306,8 +312,21 @@ describe("the system prompt", () => {
 
     const writable = mockCohere({ content: "ok" });
     await run({ cohere: writable, tools: [READ, WRITE] });
-    expect(promptOn(writable)).toMatch(/never delete anything/i);
+    expect(promptOn(writable)).toMatch(/You cannot delete anything/i);
     expect(promptOn(writable)).not.toMatch(/read-only access/);
+  });
+
+  // It refuses readily enough; what it kept doing was following the refusal
+  // with "I could archive it, or unassign it and clear its fields" — which is
+  // the damage deleting would have done, minus the honesty about it.
+  it("names the workarounds it must not offer instead of deleting", async () => {
+    const writable = mockCohere({ content: "ok" });
+    await run({ cohere: writable, tools: [READ, WRITE] });
+
+    const prompt = promptOn(writable);
+    for (const workaround of ["archive", "another state", "unassign", "clear its fields"]) {
+      expect(prompt).toContain(workaround);
+    }
   });
 
   // the model cannot check whether it really wrote something, so it is handed
@@ -356,5 +375,84 @@ describe("which calls changed data", () => {
       { name: "get_story", isWrite: false, isError: false },
       { name: "update_story", isWrite: true, isError: false },
     ]);
+  });
+});
+
+describe("carrying a conversation on", () => {
+  const priorHistory = [
+    { role: "user", content: "what am I working on?" },
+    { role: "assistant", toolCalls: [toolCall("c1", "get_my_work")] },
+    {
+      role: "tool",
+      toolCallId: "c1",
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            tool: "get_my_work",
+            result: { assigned: [{ id: 7, title: "Add login page", url: "/projects/1/stories/7" }] },
+          }),
+        },
+      ],
+    },
+    { role: "assistant", content: "You have [Add login page](/projects/1/stories/7)." },
+  ];
+
+  it("returns a history holding the whole exchange, ready to store", async () => {
+    const result = await run({ cohere: mockCohere({ content: "Hello." }) });
+
+    expect(result.history).toEqual([
+      { role: "user", content: "what am I working on?" },
+      { role: "assistant", content: "Hello." },
+    ]);
+  });
+
+  it("records the reply as the user saw it, links repaired and all", async () => {
+    const callTool = mockTools({ get_story: { id: 7, title: "Add login page", url: "/projects/1/stories/7" } });
+    const cohere = mockCohere(
+      { toolCalls: [toolCall("c1", "get_story", { storyId: 7 })] },
+      { content: "It is Add login page." },
+    );
+
+    const { history, reply } = await run({ cohere, callTool });
+
+    expect(reply).toBe("It is [Add login page](/projects/1/stories/7).");
+    expect(history.at(-1)).toEqual({ role: "assistant", content: reply });
+    // the closing turn is recorded once, not twice
+    expect(history.filter((m) => m.role === "assistant" && m.content)).toHaveLength(1);
+  });
+
+  // the point of the whole thing: the earlier tool results are still there
+  it("sends the stored exchange rather than the client's prose", async () => {
+    const cohere = mockCohere({ content: "It is in progress." });
+
+    await run({
+      cohere,
+      priorHistory,
+      messages: [
+        { role: "user", content: "what am I working on?" },
+        { role: "assistant", content: "You have Add login page." },
+        { role: "user", content: "tell me more about the first one" },
+      ],
+    });
+
+    const sent = cohere.chat.mock.calls[0][0].messages;
+    expect(sent.filter((m) => m.role === "tool")).toHaveLength(1);
+    expect(sent.at(-1)).toEqual({ role: "user", content: "tell me more about the first one" });
+    // the stored turns arrive once, not alongside the client's copy of them
+    expect(sent.filter((m) => m.role === "user")).toHaveLength(2);
+  });
+
+  // links published earlier survive a turn that runs no tool at all
+  it("keeps a link to something only an earlier turn fetched", async () => {
+    const cohere = mockCohere({ content: "Add login page is still open." });
+
+    const { reply } = await run({
+      cohere,
+      priorHistory,
+      messages: [{ role: "user", content: "is it done?" }],
+    });
+
+    expect(reply).toBe("[Add login page](/projects/1/stories/7) is still open.");
   });
 });
