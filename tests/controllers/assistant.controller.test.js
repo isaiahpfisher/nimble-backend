@@ -5,19 +5,11 @@ jest.mock("../../app/models", () => ({
   Sequelize: { Op: {} },
 }));
 
-// The MCP child process is the thing this controller is most responsible for:
-// it must be started with the caller's token and closed on every path.
-jest.mock("../../app/assistant/mcpClient", () => ({ connectAsUser: jest.fn() }));
-
-jest.mock("../../app/assistant/chat", () => ({
-  ...jest.requireActual("../../app/assistant/chat"),
-  runConversation: jest.fn(),
-}));
+jest.mock("../../app/assistant", () => ({ runChat: jest.fn() }));
 
 const db = require("../../app/models");
 const User = db.user;
-const { connectAsUser } = require("../../app/assistant/mcpClient");
-const { runConversation } = require("../../app/assistant/chat");
+const { runChat } = require("../../app/assistant");
 const controller = require("../../app/controllers/assistant.controller");
 
 function mockRes() {
@@ -27,21 +19,13 @@ function mockRes() {
   return res;
 }
 
-// A request shaped like one that has already cleared authenticateRoute.
-function mockReq(overrides = {}) {
-  const handlers = {};
-  return {
-    userId: 42,
-    body: { messages: [{ role: "user", content: "what am I working on?" }] },
-    get: jest.fn((header) => (header.toLowerCase() === "authorization" ? "Bearer session-token" : undefined)),
-    on: jest.fn((event, fn) => {
-      handlers[event] = fn;
-    }),
-    off: jest.fn(),
-    handlers,
-    ...overrides,
-  };
-}
+/** A request shaped like one that has already cleared authenticateRoute. */
+const mockReq = (overrides = {}) => ({
+  userId: 42,
+  body: { messages: [{ role: "user", content: "what am I working on?" }] },
+  get: jest.fn((header) => (header.toLowerCase() === "authorization" ? "Bearer session-token" : undefined)),
+  ...overrides,
+});
 
 const withMessages = (messages) => mockReq({ body: { messages } });
 
@@ -52,20 +36,15 @@ async function reject(req) {
   return { status: res.status.mock.calls[0]?.[0], body: res.send.mock.calls[0]?.[0] };
 }
 
-let mcp;
-
 beforeEach(() => {
   jest.clearAllMocks();
   jest.spyOn(console, "error").mockImplementation(() => {});
-  process.env.COHERE_API_KEY = "test-key";
 
-  mcp = { listTools: jest.fn(), callTool: jest.fn(), close: jest.fn(async () => {}) };
-  connectAsUser.mockResolvedValue(mcp);
   User.findByPk.mockResolvedValue({ id: 42, firstName: "Ada", lastName: "Lovelace" });
-  runConversation.mockResolvedValue({
+  runChat.mockResolvedValue({
     reply: "You have two stories in progress.",
+    toolCalls: [{ name: "get_my_work", isWrite: false, isError: false }],
     turns: 2,
-    toolCalls: [{ name: "list_stories", isError: false }],
     stoppedBecause: "answered",
   });
 });
@@ -73,21 +52,19 @@ beforeEach(() => {
 afterEach(() => jest.restoreAllMocks());
 
 describe("chat", () => {
-  it("answers with the reply and a summary of what was consulted", async () => {
+  it("answers with the reply and what was run to get it", async () => {
     const res = mockRes();
 
     await controller.chat(mockReq(), res);
 
     expect(res.send).toHaveBeenCalledWith({
       reply: "You have two stories in progress.",
-      turns: 2,
-      stoppedBecause: "answered",
-      toolCalls: [{ name: "list_stories", isError: false }],
+      toolCalls: [{ name: "get_my_work", isWrite: false, isError: false }],
     });
     expect(res.status).not.toHaveBeenCalled();
   });
 
-  it("passes the visible exchange and the user through to the loop", async () => {
+  it("passes the exchange, the user and their own token through", async () => {
     const messages = [
       { role: "user", content: "hi" },
       { role: "assistant", content: "Hello." },
@@ -96,59 +73,108 @@ describe("chat", () => {
 
     await controller.chat(withMessages(messages), mockRes());
 
-    expect(runConversation).toHaveBeenCalledWith(
+    expect(runChat).toHaveBeenCalledWith(
       expect.objectContaining({
-        mcp,
+        token: "session-token",
         messages,
         user: { id: 42, firstName: "Ada", lastName: "Lovelace" },
       }),
     );
   });
 
-  it("starts the MCP child as the caller, with their own bearer token", async () => {
-    await controller.chat(mockReq(), mockRes());
+  it("answers even when the user row cannot be read", async () => {
+    User.findByPk.mockResolvedValue(null);
+    const res = mockRes();
 
-    expect(connectAsUser).toHaveBeenCalledWith("session-token", 42);
+    await controller.chat(mockReq(), res);
+
+    expect(runChat).toHaveBeenCalledWith(expect.objectContaining({ user: null }));
+    expect(res.status).not.toHaveBeenCalled();
   });
 
-  describe("closes the MCP child", () => {
-    it("after a successful answer", async () => {
-      await controller.chat(mockReq(), mockRes());
-      expect(mcp.close).toHaveBeenCalled();
+  describe("the page they are on", () => {
+    const withProject = (projectId) =>
+      mockReq({ body: { messages: [{ role: "user", content: "what is the current sprint?" }], projectId } });
+
+    it("is passed through", async () => {
+      await controller.chat(withProject(7), mockRes());
+
+      expect(runChat).toHaveBeenCalledWith(
+        expect.objectContaining({ context: { projectId: 7, storyId: null, sprintId: null } }),
+      );
     });
 
-    it("after the loop throws", async () => {
-      runConversation.mockRejectedValue(new Error("cohere exploded"));
+    it("is null when the client is not on a project page", async () => {
       await controller.chat(mockReq(), mockRes());
-      expect(mcp.close).toHaveBeenCalled();
+
+      expect(runChat).toHaveBeenCalledWith(
+        expect.objectContaining({ context: { projectId: null, storyId: null, sprintId: null } }),
+      );
     });
 
-    it("when the browser disconnects mid-answer", async () => {
-      const req = mockReq();
-      let release;
-      runConversation.mockReturnValue(new Promise((resolve) => (release = resolve)));
+    // the whole point: "assign this to Carol" needs to know what "this" is
+    it("carries the story and sprint the user has open", async () => {
+      const req = mockReq({
+        body: {
+          messages: [{ role: "user", content: "assign this to Carol" }],
+          projectId: 2,
+          storyId: 47,
+          sprintId: 9,
+        },
+      });
 
-      const pending = controller.chat(req, mockRes());
-      await new Promise(setImmediate); // let the child finish connecting
+      await controller.chat(req, mockRes());
 
-      req.handlers.close();
-      expect(mcp.close).toHaveBeenCalled();
+      expect(runChat).toHaveBeenCalledWith(
+        expect.objectContaining({ context: { projectId: 2, storyId: 47, sprintId: 9 } }),
+      );
+    });
 
-      release({ reply: "late", turns: 1, toolCalls: [], stoppedBecause: "answered" });
-      await pending;
+    it.each(["storyId", "sprintId"])("rejects a malformed %s", async (field) => {
+      const { status, body } = await reject(
+        mockReq({ body: { messages: [{ role: "user", content: "hi" }], [field]: "47" } }),
+      );
+
+      expect(status).toBe(400);
+      expect(body.message).toMatch(field);
+    });
+
+    it.each([
+      ["a string", "7"],
+      ["a float", 7.5],
+      ["zero", 0],
+      ["a negative id", -1],
+    ])("rejects %s", async (_label, projectId) => {
+      const { status, body } = await reject(withProject(projectId));
+
+      expect(status).toBe(400);
+      expect(body.message).toMatch(/projectId/);
+    });
+
+    // an id they cannot reach is not a security problem: every tool call it
+    // leads to still runs under their own token and comes back as a refusal
+    it("does not check membership itself", async () => {
+      await controller.chat(withProject(999), mockRes());
+
+      expect(runChat).toHaveBeenCalledWith(
+        expect.objectContaining({ context: expect.objectContaining({ projectId: 999 }) }),
+      );
     });
   });
 
   describe("rejects", () => {
     it("an unauthenticated request", async () => {
       const { status } = await reject(mockReq({ userId: undefined }));
+
       expect(status).toBe(401);
-      expect(connectAsUser).not.toHaveBeenCalled();
+      expect(runChat).not.toHaveBeenCalled();
     });
 
     it("a request with no bearer token to forward", async () => {
       const { status } = await reject(mockReq({ get: jest.fn(() => undefined) }));
+
       expect(status).toBe(401);
+      expect(runChat).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -164,7 +190,7 @@ describe("chat", () => {
       const { status } = await reject(withMessages(messages));
 
       expect(status).toBe(400);
-      expect(connectAsUser).not.toHaveBeenCalled();
+      expect(runChat).not.toHaveBeenCalled();
     });
 
     // a client that could supply a system message could rewrite the standing
@@ -182,21 +208,22 @@ describe("chat", () => {
   });
 
   describe("failures", () => {
-    it("reports a missing API key as unconfigured, not broken", async () => {
-      delete process.env.COHERE_API_KEY;
+    it("reports an unconfigured assistant as such", async () => {
+      runChat.mockImplementation(() => {
+        throw Object.assign(new Error("The assistant is not configured on this server."), {
+          statusCode: 503,
+          expose: true,
+        });
+      });
 
-      // the client is built once and cached, so this needs a fresh module
-      jest.resetModules();
-      const fresh = require("../../app/controllers/assistant.controller");
-      const res = mockRes();
-      await fresh.chat(mockReq(), res);
+      const { status, body } = await reject(mockReq());
 
-      expect(res.status).toHaveBeenCalledWith(503);
-      expect(res.send.mock.calls[0][0].message).toMatch(/not configured/);
+      expect(status).toBe(503);
+      expect(body.message).toMatch(/not configured/);
     });
 
     it("does not leak internal detail when the loop throws", async () => {
-      runConversation.mockRejectedValue(new Error("cohere: invalid api key sk-secret"));
+      runChat.mockRejectedValue(new Error("cohere: invalid api key sk-secret"));
 
       const { status, body } = await reject(mockReq());
 
@@ -204,14 +231,28 @@ describe("chat", () => {
       expect(body.message).toBe("The assistant failed to answer.");
     });
 
-    it("answers even when the user row cannot be read", async () => {
-      User.findByPk.mockResolvedValue(null);
-      const res = mockRes();
+    // The Cohere SDK raises errors carrying their own statusCode, and their
+    // message holds the raw response body — request ids, and on a 401 part of
+    // the API key. Presence of a statusCode is not permission to forward it.
+    it.each([
+      [422, 'UnprocessableEntityError\nStatus code: 422\nBody: {"error_type": "NO_TOOL_CALL_OR_RESPONSE_GENERATED"}'],
+      [401, 'UnauthorizedError\nBody: {"message": "Incorrect API key provided: *****alid."}'],
+      [429, "TooManyRequestsError\nStatus code: 429"],
+    ])("never forwards a provider error body (%s)", async (statusCode, message) => {
+      runChat.mockRejectedValue(Object.assign(new Error(message), { statusCode }));
 
-      await controller.chat(mockReq(), res);
+      const { status, body } = await reject(mockReq());
 
-      expect(runConversation).toHaveBeenCalledWith(expect.objectContaining({ user: null }));
-      expect(res.status).not.toHaveBeenCalled();
+      expect(status).toBe(503);
+      expect(body.message).toBe("The assistant is having trouble right now. Please try again in a moment.");
+      expect(body.message).not.toMatch(/NO_TOOL_CALL|API key|Status code/);
+    });
+
+    it("still quotes messages we wrote ourselves", async () => {
+      const { status, body } = await reject(withMessages([{ role: "user", content: "" }]));
+
+      expect(status).toBe(400);
+      expect(body.message).toMatch(/Invalid content/);
     });
   });
 });
