@@ -275,7 +275,7 @@ exports.delete = async (req, res) => {
       throw httpError(`Cannot find Comment with id = ${id}.`, 400);
     }
 
-    if (comment.userId !== userId) {
+    if (comment.userId !== userId && !user.isAdmin) {
       throw httpError("You do not have permission to delete this comment.", 403);
     }
 
