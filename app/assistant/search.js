@@ -49,6 +49,23 @@ function termMatches(term, text) {
 // their titles, and descriptions are long enough to collide by accident.
 const FIELD_WEIGHTS = { title: 5, type: 2, description: 1 };
 
+/** The best field weight each term reaches in one story, in query order. */
+function termScores(story, terms) {
+  const fields = {
+    title: story.title ?? "",
+    type: story.type?.name ?? "",
+    description: story.description ?? "",
+  };
+
+  return terms.map((term) => {
+    let best = 0;
+    for (const [field, weight] of Object.entries(FIELD_WEIGHTS)) {
+      if (termMatches(term, fields[field])) best = Math.max(best, weight);
+    }
+    return best;
+  });
+}
+
 /**
  * How well one story answers a search, as a number. Zero means "not a match".
  *
@@ -60,25 +77,12 @@ function scoreStory(story, terms, { idHint = null } = {}) {
   if (idHint != null && Number(story.id) === Number(idHint)) return 1000;
   if (!terms.length) return 0;
 
-  const fields = {
-    title: story.title ?? "",
-    type: story.type?.name ?? "",
-    description: story.description ?? "",
-  };
-
-  let score = 0;
-  let hits = 0;
-
-  for (const term of terms) {
-    let best = 0;
-    for (const [field, weight] of Object.entries(FIELD_WEIGHTS)) {
-      if (termMatches(term, fields[field])) best = Math.max(best, weight);
-    }
-    if (best > 0) hits += 1;
-    score += best;
-  }
+  const scores = termScores(story, terms);
+  const hits = scores.filter(Boolean).length;
 
   if (hits === 0) return 0;
+
+  const score = scores.reduce((total, value) => total + value, 0);
   // matching every word is a much stronger signal than matching one of four
   return hits === terms.length ? score * 2 : score;
 }

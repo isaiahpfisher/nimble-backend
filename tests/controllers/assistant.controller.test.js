@@ -5,11 +5,15 @@ jest.mock("../../app/models", () => ({
   Sequelize: { Op: {} },
 }));
 
-jest.mock("../../app/assistant", () => ({ runChat: jest.fn() }));
+jest.mock("../../app/assistant", () => ({
+  runChat: jest.fn(),
+  runSingleTool: jest.fn(),
+  runGeneration: jest.fn(),
+}));
 
 const db = require("../../app/models");
 const User = db.user;
-const { runChat } = require("../../app/assistant");
+const { runChat, runSingleTool, runGeneration } = require("../../app/assistant");
 const controller = require("../../app/controllers/assistant.controller");
 
 function mockRes() {
@@ -48,6 +52,8 @@ beforeEach(() => {
     stoppedBecause: "answered",
     conversationId: "6f2e0fbc-d5a6-457d-8eaa-018456b94cc1",
   });
+  runSingleTool.mockResolvedValue({ ok: true, result: { likelyDuplicate: false, matched: 0 } });
+  runGeneration.mockResolvedValue({ ok: true, result: { criteria: [{ title: "T", description: "D" }] } });
 });
 
 afterEach(() => jest.restoreAllMocks());
@@ -286,5 +292,241 @@ describe("chat", () => {
       expect(status).toBe(400);
       expect(body.message).toMatch(/Invalid content/);
     });
+  });
+});
+
+// The door Nimble's own pages use: one tool, no model, no conversation. It is
+// reachable from a button, which is exactly why it may not write.
+describe("tool", () => {
+  const toolReq = (overrides = {}) =>
+    mockReq({
+      params: { name: "get_story" },
+      body: { args: { storyId: 9 }, projectId: 3 },
+      ...overrides,
+    });
+
+  /** Runs the handler and returns what it answered with. */
+  async function invoke(req) {
+    const res = mockRes();
+    await controller.tool(req, res);
+    return { status: res.status.mock.calls[0]?.[0], body: res.send.mock.calls[0]?.[0] };
+  }
+
+  it("returns the tool's result, naming what ran", async () => {
+    const res = mockRes();
+
+    await controller.tool(toolReq(), res);
+
+    expect(res.send).toHaveBeenCalledWith({
+      tool: "get_story",
+      result: { likelyDuplicate: false, matched: 0 },
+    });
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it("passes the args, the page context and the caller's own token through", async () => {
+    await invoke(toolReq({ body: { args: { storyId: 9 }, projectId: 3, storyId: 9 } }));
+
+    expect(runSingleTool).toHaveBeenCalledWith({
+      token: "session-token",
+      userId: 42,
+      name: "get_story",
+      args: { storyId: 9 },
+      context: { projectId: 3, storyId: 9, sprintId: null },
+    });
+  });
+
+  it("defaults the args to empty rather than refusing a tool that takes none", async () => {
+    await invoke(toolReq({ body: { projectId: 3 } }));
+
+    expect(runSingleTool).toHaveBeenCalledWith(expect.objectContaining({ args: {} }));
+  });
+
+  describe("rejects", () => {
+    it("an unauthenticated request", async () => {
+      const { status } = await invoke(toolReq({ userId: undefined }));
+
+      expect(status).toBe(401);
+      expect(runSingleTool).not.toHaveBeenCalled();
+    });
+
+    it("a request with no bearer token to forward", async () => {
+      const { status } = await invoke(toolReq({ get: jest.fn(() => undefined) }));
+
+      expect(status).toBe(401);
+      expect(runSingleTool).not.toHaveBeenCalled();
+    });
+
+    // a path segment of any other shape never reaches the registry
+    it.each(["../../etc/passwd", "Find_Story", "find story", "x"])(
+      "a name that is not a tool name (%s)",
+      async (name) => {
+        const { status } = await invoke(toolReq({ params: { name } }));
+
+        expect(status).toBe(400);
+        expect(runSingleTool).not.toHaveBeenCalled();
+      },
+    );
+
+    it("args that are not an object", async () => {
+      const { status, body } = await invoke(toolReq({ body: { args: ["title"] } }));
+
+      expect(status).toBe(400);
+      expect(body.message).toMatch(/args must be an object/);
+    });
+
+    it("a page context that is not an id", async () => {
+      const { status } = await invoke(toolReq({ body: { args: {}, projectId: "three" } }));
+
+      expect(status).toBe(400);
+      expect(runSingleTool).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("maps the refusal to a status", () => {
+    it.each([
+      ["unknown", 404],
+      ["readonly", 403],
+      ["failed", 400],
+    ])("%s becomes %s", async (reason, status) => {
+      runSingleTool.mockResolvedValue({ ok: false, reason, error: "no" });
+
+      expect((await invoke(toolReq())).status).toBe(status);
+    });
+
+    it("says which tool refused, so a button can report it", async () => {
+      runSingleTool.mockResolvedValue({
+        ok: false,
+        reason: "readonly",
+        error: "update_sprint changes data, so it cannot be called directly.",
+      });
+
+      const { body } = await invoke(toolReq({ params: { name: "update_sprint" } }));
+
+      expect(body.message).toMatch(/update_sprint changes data/);
+    });
+  });
+
+  it("does not leak internal detail when the session throws", async () => {
+    runSingleTool.mockRejectedValue(new Error("connect ECONNREFUSED 127.0.0.1:3200"));
+
+    const { status, body } = await invoke(toolReq());
+
+    expect(status).toBe(500);
+    expect(body.message).not.toMatch(/ECONNREFUSED/);
+  });
+});
+
+// Writing, rather than fetching. Nothing here is saved: the handler returns a
+// draft and the ordinary story and criteria endpoints do the writing once
+// somebody has accepted it.
+describe("generate", () => {
+  const genReq = (overrides = {}) =>
+    mockReq({
+      params: { kind: "acceptance_criteria" },
+      body: { args: {}, projectId: 1, storyId: 7 },
+      ...overrides,
+    });
+
+  async function invoke(req) {
+    const res = mockRes();
+    await controller.generate(req, res);
+    return { status: res.status.mock.calls[0]?.[0], body: res.send.mock.calls[0]?.[0] };
+  }
+
+  it("returns the draft, naming what produced it", async () => {
+    const res = mockRes();
+
+    await controller.generate(genReq(), res);
+
+    expect(res.send).toHaveBeenCalledWith({
+      kind: "acceptance_criteria",
+      result: { criteria: [{ title: "T", description: "D" }] },
+    });
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it("passes the args, the page context and the caller's own token through", async () => {
+    await invoke(genReq({ body: { args: { prompt: "users can't reset passwords" }, projectId: 1 } }));
+
+    expect(runGeneration).toHaveBeenCalledWith({
+      token: "session-token",
+      kind: "acceptance_criteria",
+      args: { prompt: "users can't reset passwords" },
+      context: { projectId: 1, storyId: null, sprintId: null },
+    });
+  });
+
+  describe("rejects", () => {
+    it("an unauthenticated request", async () => {
+      const { status } = await invoke(genReq({ userId: undefined }));
+
+      expect(status).toBe(401);
+      expect(runGeneration).not.toHaveBeenCalled();
+    });
+
+    it("a request with no bearer token to forward", async () => {
+      const { status } = await invoke(genReq({ get: jest.fn(() => undefined) }));
+
+      expect(status).toBe(401);
+      expect(runGeneration).not.toHaveBeenCalled();
+    });
+
+    it.each(["../../etc/passwd", "Acceptance_Criteria", "story draft", "x"])(
+      "a kind that is not a kind (%s)",
+      async (kind) => {
+        const { status } = await invoke(genReq({ params: { kind } }));
+
+        expect(status).toBe(400);
+        expect(runGeneration).not.toHaveBeenCalled();
+      },
+    );
+
+    it("args that are not an object", async () => {
+      const { status, body } = await invoke(genReq({ body: { args: "criteria" } }));
+
+      expect(status).toBe(400);
+      expect(body.message).toMatch(/args must be an object/);
+    });
+  });
+
+  it("answers 404 for something it cannot generate", async () => {
+    runGeneration.mockResolvedValue({ ok: false, reason: "unknown", error: "no such thing" });
+
+    expect((await invoke(genReq())).status).toBe(404);
+  });
+
+  it("answers 400 for arguments the caller can fix, quoting the complaint", async () => {
+    runGeneration.mockResolvedValue({
+      ok: false,
+      reason: "invalid",
+      error: "Invalid arguments for story_draft — prompt: too small.",
+    });
+
+    const { status, body } = await invoke(genReq({ params: { kind: "story_draft" } }));
+
+    expect(status).toBe(400);
+    expect(body.message).toMatch(/prompt: too small/);
+  });
+
+  // the provider being down is not the user's mistake to correct
+  it("answers 503 when the provider fails, without quoting it", async () => {
+    runGeneration.mockRejectedValue(
+      Object.assign(new Error("TooManyRequestsError\nStatus code: 429"), { statusCode: 429 }),
+    );
+
+    const { status, body } = await invoke(genReq());
+
+    expect(status).toBe(503);
+    expect(body.message).not.toMatch(/429|TooManyRequests/);
+  });
+
+  it("does not leak internal detail when it throws for any other reason", async () => {
+    runGeneration.mockRejectedValue(new Error("connect ECONNREFUSED 127.0.0.1:3200"));
+
+    const { status, body } = await invoke(genReq());
+
+    expect(status).toBe(500);
+    expect(body.message).not.toMatch(/ECONNREFUSED/);
   });
 });

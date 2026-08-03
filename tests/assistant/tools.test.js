@@ -53,7 +53,7 @@ describe("the tool list", () => {
   });
 
   // the safe-integer bounds Zod emits for every int are true, useless, and
-  // repeated in all 23 definitions the model has to read
+  // repeated in every definition the model has to read
   it("does not ship the schema noise Zod adds to integers", () => {
     const json = JSON.stringify(toolSpecs());
 
@@ -65,8 +65,12 @@ describe("the tool list", () => {
   // has to reach the model on the field itself, not only in the prompt — that
   // is what it is reading while it fills the argument in.
   describe("the description formats", () => {
-    const describes = (name, field) =>
-      toolSpecs().find((spec) => spec.name === name).parameters.properties[field].description;
+    const describes = (name, field) => {
+      const { properties } = toolSpecs().find((spec) => spec.name === name).parameters;
+      // add_acceptance_criteria takes a list, so its prose field hangs off the
+      // array's items rather than off the tool itself
+      return (properties.criteria?.items?.properties ?? properties)[field].description;
+    };
 
     it.each(["create_story", "update_story"])("puts the user story shape on %s", (name) => {
       expect(describes(name, "description")).toContain(STORY_DESCRIPTION);
@@ -306,18 +310,23 @@ describe("creating a story", () => {
   });
 });
 
-describe("adding an acceptance criterion", () => {
+describe("adding acceptance criteria", () => {
   const criterion = "Given a filtered backlog, when I clear the filter, then every story returns.";
+  const second = "Given no filter, when I open the backlog, then every story is listed.";
+
+  const add = (criteria) => ({ projectId: 1, storyId: 7, criteria });
 
   it("refuses one with no description", async () => {
-    const outcome = await runTool(
-      "add_acceptance_criteria",
-      { projectId: 1, storyId: 7, title: "Filter clears" },
-      ctx(),
-    );
+    const outcome = await runTool("add_acceptance_criteria", add([{ title: "Filter clears" }]), ctx());
 
     expect(outcome).toMatchObject({ ok: false });
     expect(outcome.error).toMatch(/description/);
+  });
+
+  it("refuses an empty list, rather than reporting it added nothing", async () => {
+    const outcome = await runTool("add_acceptance_criteria", add([]), ctx());
+
+    expect(outcome).toMatchObject({ ok: false });
   });
 
   it("saves the Given/When/Then as written, and starts it Pending", async () => {
@@ -327,7 +336,7 @@ describe("adding an acceptance criterion", () => {
 
     const outcome = await runTool(
       "add_acceptance_criteria",
-      { projectId: 1, storyId: 7, title: "Filter clears", description: criterion },
+      add([{ title: "Filter clears", description: criterion }]),
       { api, userId: 5 },
     );
 
@@ -335,7 +344,73 @@ describe("adding an acceptance criterion", () => {
       method: "POST",
       body: { title: "Filter clears", description: criterion, status: "Pending" },
     });
-    expect(outcome.result).toMatchObject({ created: "acceptanceCriterion", url: "/projects/1/stories/7" });
+    expect(outcome.result).toMatchObject({
+      created: "acceptanceCriteria",
+      count: 1,
+      url: "/projects/1/stories/7",
+    });
+  });
+
+  it("saves a whole set in the order it was given", async () => {
+    let next = 3;
+    const api = mockApi({
+      "POST /projects/1/stories/7/acceptanceCriteria": (body) => ({ id: next++, ...body }),
+    });
+
+    const outcome = await runTool(
+      "add_acceptance_criteria",
+      add([
+        { title: "Filter clears", description: criterion },
+        { title: "Unfiltered list", description: second },
+      ]),
+      { api, userId: 5 },
+    );
+
+    expect(api).toHaveBeenCalledTimes(2);
+    expect(outcome.result.count).toBe(2);
+    expect(outcome.result.criteria.map((c) => c.title)).toEqual(["Filter clears", "Unfiltered list"]);
+    expect(outcome.result.failed).toEqual([]);
+  });
+
+  // the failure that matters: some of them saved, and the model is about to
+  // tell the user the story is covered
+  it("reports what saved when a later one fails", async () => {
+    let calls = 0;
+    const api = jest.fn(async (path, options) => {
+      calls += 1;
+      if (calls === 2) throw new Error("Title is required. (HTTP 400)");
+      return { id: 3, ...options.body };
+    });
+
+    const outcome = await runTool(
+      "add_acceptance_criteria",
+      add([
+        { title: "Filter clears", description: criterion },
+        { title: "Unfiltered list", description: second },
+      ]),
+      { api, userId: 5 },
+    );
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.result.count).toBe(1);
+    expect(outcome.result.failed).toEqual([
+      { title: "Unfiltered list", error: "Title is required. (HTTP 400)" },
+    ]);
+  });
+
+  it("fails outright when nothing saved", async () => {
+    const api = jest.fn(async () => {
+      throw new Error("Story not found. (HTTP 404)");
+    });
+
+    const outcome = await runTool(
+      "add_acceptance_criteria",
+      add([{ title: "Filter clears", description: criterion }]),
+      { api, userId: 5 },
+    );
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error).toMatch(/No acceptance criteria were added\. Story not found/);
   });
 });
 

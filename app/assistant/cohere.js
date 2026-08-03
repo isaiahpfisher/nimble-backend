@@ -227,6 +227,7 @@ module.exports = {
   cohereClient,
   toolDefinitions,
   readText,
+  unfence,
   packResult,
   readToolResult,
   ask,

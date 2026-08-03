@@ -21,7 +21,7 @@ const TOOLS = [...projects, ...stories, ...details, ...sprints, ...insights];
 const BY_NAME = new Map(TOOLS.map((tool) => [tool.name, tool]));
 
 // z.number().int() carries the JS safe-integer range into every property it
-// touches. True, useless, and repeated in all 23 tool definitions the model is
+// touches. True, useless, and repeated in every tool definition the model is
 // shown — so it comes back out before the schema is sent anywhere.
 const SAFE = Number.MAX_SAFE_INTEGER;
 

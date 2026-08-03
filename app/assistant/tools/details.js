@@ -47,31 +47,72 @@ module.exports = [
 
   {
     name: "add_acceptance_criteria",
-    title: "Add an acceptance criterion",
+    title: "Add acceptance criteria to a story",
     write: true,
     description:
-      "Add one acceptance criterion to a story. Call it once per criterion, and give each one a single " +
-      `Given/When/Then — "${CRITERION_DESCRIPTION}" — rather than folding several conditions into one. ` +
-      "You write that description; send the user's own wording only when they spelled the criterion out " +
-      "themselves. A new criterion is Pending unless you say otherwise.",
+      "Add acceptance criteria to a story — one, or a whole set in a single call. Give each one a " +
+      `single Given/When/Then — "${CRITERION_DESCRIPTION}" — rather than folding several conditions ` +
+      "into one; a story worth spelling out usually needs three to six, covering the ordinary path and " +
+      "the ways it can fail. You write them; send the user's own wording only where they spelled a " +
+      "criterion out themselves. New criteria are Pending unless you say otherwise.\n\n" +
+      "Read the story first and do not restate a criterion it already has. Behind this call they are " +
+      "saved one at a time, so a later one can fail after earlier ones landed: `criteria` is what was " +
+      "created and `failed` is what was not. Check `failed` before telling the user the story is " +
+      "covered.",
     input: z.object({
       projectId: num("Id of the project the story belongs to."),
-      storyId: num("Id of the story to add the criterion to."),
-      title: str("Short name for the criterion."),
-      description: str(
-        `What has to be true for it to pass, written as "${CRITERION_DESCRIPTION}". Required: write it ` +
-          "yourself rather than repeating the title. If the user spelled the criterion out, send theirs " +
-          "exactly as they wrote it instead.",
-      ),
-      status: z.enum(AC_STATUSES).default("Pending").describe("Pending, Passed or Failed. New ones are Pending."),
+      storyId: num("Id of the story to add the criteria to."),
+      criteria: z
+        .array(
+          z.object({
+            title: str("Short name for the criterion."),
+            description: str(
+              `What has to be true for it to pass, written as "${CRITERION_DESCRIPTION}". Required: ` +
+                "write it yourself rather than repeating the title. If the user spelled the criterion " +
+                "out, send theirs exactly as they wrote it instead.",
+            ),
+            status: z
+              .enum(AC_STATUSES)
+              .default("Pending")
+              .describe("Pending, Passed or Failed. New ones are Pending."),
+          }),
+        )
+        .min(1)
+        .max(20)
+        .describe("The criteria to add, in the order they should appear on the story."),
     }),
-    async run({ projectId, storyId, title, description, status }, { api }) {
-      const criterion = await api(`/projects/${projectId}/stories/${storyId}/acceptanceCriteria`, {
-        method: "POST",
-        body: { title, description, status },
-      });
+    async run({ projectId, storyId, criteria }, { api }) {
+      const created = [];
+      const failed = [];
 
-      return { created: "acceptanceCriterion", ...criterion, url: storyUrl(projectId, storyId) };
+      // Sequentially, not in parallel: these land in the story's activity feed
+      // and share an order column, and firing twenty POSTs at once scrambles
+      // both for no gain worth having.
+      for (const criterion of criteria) {
+        try {
+          const saved = await api(`/projects/${projectId}/stories/${storyId}/acceptanceCriteria`, {
+            method: "POST",
+            body: criterion,
+          });
+          created.push({ id: saved.id, title: saved.title, status: saved.status });
+        } catch (err) {
+          failed.push({ title: criterion.title, error: err.message });
+        }
+      }
+
+      // Nothing saved is a failure, not a result with an empty list — the
+      // difference decides whether the model reports success.
+      if (!created.length) {
+        throw new Error(`No acceptance criteria were added. ${failed[0]?.error ?? ""}`.trim());
+      }
+
+      return {
+        created: "acceptanceCriteria",
+        count: created.length,
+        criteria: created,
+        failed,
+        url: storyUrl(projectId, storyId),
+      };
     },
   },
 

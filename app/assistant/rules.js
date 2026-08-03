@@ -260,6 +260,18 @@ function resolveState(query, states) {
 // --- sprint maths ----------------------------------------------------------
 
 /**
+ * Whether a story counts as finished.
+ *
+ * Two things can say so and they disagree in practice: `completedAt` is stamped
+ * when work lands, and a project's `completedStateId` is the board column that
+ * means done. A story dragged to the last column without the timestamp is still
+ * finished to the team looking at the board, so either one is enough.
+ */
+const isStoryDone = (story, completedStateId = null) =>
+  story.completedAt != null ||
+  (completedStateId != null && Number(story.stateId) === Number(completedStateId));
+
+/**
  * Where a sprint actually stands, in the same terms the burndown chart uses:
  * points, not story counts, with `completedAt` marking when work landed.
  *
@@ -267,12 +279,8 @@ function resolveState(query, states) {
  * which is what makes "ahead" or "behind" meaningful rather than a vibe.
  */
 function sprintProgress({ sprint, stories, completedStateId = null, today: now }) {
-  const isDone = (story) =>
-    story.completedAt != null ||
-    (completedStateId != null && Number(story.stateId) === Number(completedStateId));
-
   const points = (list) => list.reduce((total, story) => total + (story.estimate ?? 0), 0);
-  const done = stories.filter(isDone);
+  const done = stories.filter((story) => isStoryDone(story, completedStateId));
 
   const totalPoints = points(stories);
   const completedPoints = points(done);
@@ -324,5 +332,6 @@ module.exports = {
   resolveRelation,
   resolvePerson,
   resolveState,
+  isStoryDone,
   sprintProgress,
 };
