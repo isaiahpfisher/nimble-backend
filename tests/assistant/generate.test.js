@@ -1,303 +1,318 @@
-// Generation is the other half of the assistant: not looking something up, but
-// writing something that was not there. It answers in JSON so the page can
-// render fields and write them back, and it saves nothing — a person accepts
-// every draft before it becomes a record.
+// The generators: one model call in, a draft out, nothing saved.
 
-const mockAsk = jest.fn();
-const mockNimbleApi = jest.fn();
+const { fakeApi } = require("./fixture");
 
-jest.mock("../../app/assistant/cohere", () => ({
-  ...jest.requireActual("../../app/assistant/cohere"),
-  ask: mockAsk,
-  cohereClient: jest.fn(() => ({})),
+// `mock`-prefixed so jest's hoisting lets the factory below close over it
+const mockNimble = fakeApi(1);
+
+jest.mock("../../app/assistant/tools", () => ({
+  ...jest.requireActual("../../app/assistant/tools"),
+  apiClient: () => mockNimble.api,
 }));
 
-jest.mock("../../app/assistant/api", () => ({ apiClient: jest.fn(() => mockNimbleApi) }));
+jest.mock("../../app/assistant/chat", () => ({
+  ...jest.requireActual("../../app/assistant/chat"),
+  cohereClient: () => ({ chat: jest.fn() }),
+  ask: jest.fn(),
+}));
 
-const { KINDS, runGeneration, stripHtml } = require("../../app/assistant/generate");
-const { CRITERION_DESCRIPTION, STORY_DESCRIPTION } = require("../../app/assistant/rules");
+const { ask } = require("../../app/assistant/chat");
+const { runGeneration, KINDS, stripHtml } = require("../../app/assistant/generate");
 
-const project = {
-  id: 1,
-  title: "Atlas",
-  storyType: [
-    { id: 20, name: "Bug" },
-    { id: 21, name: "Feature" },
-  ],
-};
+/** The model replies with this JSON, once. */
+const replies = (payload) =>
+  ask.mockResolvedValueOnce({ content: typeof payload === "string" ? payload : JSON.stringify(payload) });
 
-const story = {
-  id: 7,
-  title: "Password reset never arrives",
-  description: "<p>Users report the reset email &amp; link never turn up.</p>",
-  type: { id: 20, name: "Bug" },
-  acceptanceCriteria: [],
-};
-
-/** What the model said, in the shape readText expects. */
-const answers = (payload) =>
-  mockAsk.mockResolvedValue({ content: typeof payload === "string" ? payload : JSON.stringify(payload) });
-
-const run = (kind, args = {}, context = {}) => runGeneration({ token: "session-token", kind, args, context });
-
-/** The instruction the model was actually given. */
-const instruction = () => mockAsk.mock.calls.at(-1)[1].messages.at(-1).content;
-const request = () => mockAsk.mock.calls.at(-1)[1];
+const lastInstruction = () => ask.mock.calls.at(-1)[1].messages[1].content;
 
 beforeEach(() => {
-  jest.clearAllMocks();
+  ask.mockReset();
+});
 
-  mockNimbleApi.mockImplementation(async (path) => {
-    if (path === "/projects/1") return project;
-    if (path === "/projects/1/stories/7") return story;
-    throw new Error(`Nothing at ${path} (HTTP 404)`);
+describe("the catalogue", () => {
+  it("offers exactly the three things the UI asks for", () => {
+    expect(KINDS.sort()).toEqual(["acceptance_criteria", "story_description", "story_draft"]);
+  });
+
+  it("refuses something it cannot generate", async () => {
+    const outcome = await runGeneration({ token: "t", kind: "haiku", args: {} });
+
+    expect(outcome).toMatchObject({ ok: false, reason: "unknown" });
+    expect(outcome.error).toContain('nothing called "haiku"');
+  });
+
+  // these name a property every object inherits, so a truthy lookup finds
+  // something with no generator behind it
+  it.each(["constructor", "toString", "__proto__"])("refuses %s like any other stranger", async (kind) => {
+    const outcome = await runGeneration({ token: "t", kind, args: {} });
+
+    expect(outcome).toMatchObject({ ok: false, reason: "unknown" });
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it("reports arguments that do not fit, without calling the model", async () => {
+    const outcome = await runGeneration({ token: "t", kind: "story_draft", args: { projectId: 1 } });
+
+    expect(outcome).toMatchObject({ ok: false, reason: "invalid" });
+    expect(outcome.error).toContain("prompt");
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it("fills the ids from the page the button is on", async () => {
+    replies({ criteria: [] });
+
+    const outcome = await runGeneration({
+      token: "t",
+      kind: "acceptance_criteria",
+      args: {},
+      context: { projectId: 1, storyId: 70 },
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.result.storyId).toBe(70);
+  });
+
+  it("lets an explicit argument win over the page", async () => {
+    replies({ criteria: [] });
+
+    const outcome = await runGeneration({
+      token: "t",
+      kind: "acceptance_criteria",
+      args: { storyId: 71 },
+      context: { projectId: 1, storyId: 70 },
+    });
+
+    expect(outcome.result.storyId).toBe(71);
+  });
+});
+
+describe("acceptance_criteria", () => {
+  const generated = {
+    criteria: [
+      { title: "Locked out", description: "Given five failed attempts, when they try again, then it is refused." },
+    ],
+  };
+
+  it("returns the criteria and what the story already had", async () => {
+    replies(generated);
+
+    const outcome = await runGeneration({
+      token: "t",
+      kind: "acceptance_criteria",
+      args: { projectId: 1, storyId: 70 },
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.result).toMatchObject({
+      storyId: 70,
+      existingCount: 2,
+      story: { id: 70, title: "There's an issue with the login page" },
+    });
+    expect(outcome.result.criteria).toEqual(generated.criteria);
+  });
+
+  it("tells the model not to restate criteria the story already has", async () => {
+    replies(generated);
+    await runGeneration({ token: "t", kind: "acceptance_criteria", args: { projectId: 1, storyId: 70 } });
+
+    const instruction = lastInstruction();
+    expect(instruction).toContain("ALREADY has these criteria");
+    expect(instruction).toContain("Valid password works");
+    expect(instruction).toContain("between 2 and 4");
+  });
+
+  it("asks for a full set when the story has none", async () => {
+    replies(generated);
+    await runGeneration({ token: "t", kind: "acceptance_criteria", args: { projectId: 1, storyId: 71 } });
+
+    expect(lastInstruction()).toContain("Write between 3 and 6");
+    expect(lastInstruction()).not.toContain("ALREADY has");
+  });
+
+  it("asks for the Given/When/Then shape", async () => {
+    replies(generated);
+    await runGeneration({ token: "t", kind: "acceptance_criteria", args: { projectId: 1, storyId: 70 } });
+
+    expect(lastInstruction()).toContain("Given <starting state>, when <action>, then <observable result>.");
+  });
+
+  it("passes a story that does not exist back as something to fix", async () => {
+    const outcome = await runGeneration({
+      token: "t",
+      kind: "acceptance_criteria",
+      args: { projectId: 1, storyId: 999 },
+    });
+
+    expect(outcome).toMatchObject({ ok: false, reason: "failed" });
+    expect(outcome.error).toContain("No story 999");
+  });
+});
+
+describe("story_description", () => {
+  it("rewrites an existing story in the house format", async () => {
+    replies({ description: "As an admin, when I sign in, I want access, so that I can work." });
+
+    const outcome = await runGeneration({
+      token: "t",
+      kind: "story_description",
+      args: { projectId: 1, storyId: 70 },
+    });
+
+    expect(outcome.result.description).toBe(
+      "As an admin, when I sign in, I want access, so that I can work.",
+    );
+    expect(outcome.result.original).toContain("As a user, when I sign in");
+    expect(lastInstruction()).toContain("As a <who>, when I <when>, I want to <what>, so that <why>.");
+  });
+
+  it("works from a title alone, for the create form where no story exists yet", async () => {
+    replies({ description: "As a user, when I export, I want CSV, so that I can share it." });
+
+    const outcome = await runGeneration({
+      token: "t",
+      kind: "story_description",
+      args: { projectId: 1, title: "Add CSV export" },
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.result.storyId).toBeNull();
+    expect(lastInstruction()).toContain("no description yet");
+  });
+
+  it("needs either a story or a title", async () => {
+    const outcome = await runGeneration({ token: "t", kind: "story_description", args: { projectId: 1 } });
+
+    expect(outcome).toMatchObject({ ok: false, reason: "invalid" });
+    expect(outcome.error).toContain("storyId");
+  });
+
+  it("shows the model the sentence, not the markup", async () => {
+    replies({ description: "As a user, when I sign in, I want access, so that I can work." });
+
+    await runGeneration({
+      token: "t",
+      kind: "story_description",
+      args: { projectId: 1, title: "X", description: "<p>Sign&nbsp;in <b>fails</b></p>" },
+    });
+
+    expect(lastInstruction()).toContain("Sign in fails");
+    expect(lastInstruction()).not.toContain("<b>");
+  });
+});
+
+describe("story_draft", () => {
+  const draft = {
+    title: "Fix the password reset email",
+    description: "As a user, when I reset my password, I want the email to arrive, so that I can sign in.",
+    priority: "High",
+    type: "Bug",
+    criteria: [{ title: "Email arrives", description: "Given a reset request, when it is sent, then an email arrives." }],
+  };
+
+  it("returns a whole story, with the type resolved to an id", async () => {
+    replies(draft);
+
+    const outcome = await runGeneration({
+      token: "t",
+      kind: "story_draft",
+      args: { projectId: 1, prompt: "password reset emails never arrive" },
+    });
+
+    expect(outcome.result).toMatchObject({
+      projectId: 1,
+      title: draft.title,
+      priority: "High",
+      type: "Bug",
+      typeId: 20,
+    });
+    expect(outcome.result.criteria).toHaveLength(1);
+  });
+
+  it("offers only the types the project actually defines", async () => {
+    replies(draft);
+    await runGeneration({ token: "t", kind: "story_draft", args: { projectId: 1, prompt: "anything at all" } });
+
+    expect(lastInstruction()).toContain("Bug, Feature, Chore");
+    expect(ask.mock.calls.at(-1)[1].responseFormat.jsonSchema.properties.type.enum).toEqual([
+      "Bug",
+      "Feature",
+      "Chore",
+    ]);
+  });
+
+  it("drops a type the project does not have rather than guessing", async () => {
+    replies({ ...draft, type: "Epic" });
+
+    const outcome = await runGeneration({
+      token: "t",
+      kind: "story_draft",
+      args: { projectId: 1, prompt: "something" },
+    });
+
+    expect(outcome.result.typeId).toBeNull();
+    expect(outcome.result.type).toBeNull();
+    // the rest of the draft still comes back, so the form opens filled in
+    expect(outcome.result.title).toBe(draft.title);
+  });
+
+  it("drops a priority that is not one of ours", async () => {
+    replies({ ...draft, priority: "Urgent" });
+
+    const outcome = await runGeneration({
+      token: "t",
+      kind: "story_draft",
+      args: { projectId: 1, prompt: "something" },
+    });
+
+    expect(outcome.result.priority).toBeNull();
+  });
+
+  it("refuses a prompt long enough to be a pasted document", async () => {
+    const outcome = await runGeneration({
+      token: "t",
+      kind: "story_draft",
+      args: { projectId: 1, prompt: "x".repeat(501) },
+    });
+
+    expect(outcome).toMatchObject({ ok: false, reason: "invalid" });
+  });
+});
+
+describe("when the model misbehaves", () => {
+  it("still reads JSON the model wrapped in a fence", async () => {
+    replies('```json\n{"description":"As a user, when I sign in, I want in, so that I work."}\n```');
+
+    const outcome = await runGeneration({
+      token: "t",
+      kind: "story_description",
+      args: { projectId: 1, storyId: 70 },
+    });
+
+    expect(outcome.result.description).toBe("As a user, when I sign in, I want in, so that I work.");
+  });
+
+  it("raises a retryable failure when the answer is not JSON at all", async () => {
+    replies("I'd rather not.");
+
+    await expect(
+      runGeneration({ token: "t", kind: "story_description", args: { projectId: 1, storyId: 70 } }),
+    ).rejects.toMatchObject({ statusCode: 502 });
+  });
+
+  it("raises a retryable failure when the model says nothing", async () => {
+    ask.mockResolvedValueOnce({ content: "" });
+
+    await expect(
+      runGeneration({ token: "t", kind: "story_description", args: { projectId: 1, storyId: 70 } }),
+    ).rejects.toMatchObject({ statusCode: 502 });
   });
 });
 
 describe("stripHtml", () => {
-  it("leaves the sentence and drops the markup", () => {
-    expect(stripHtml("<p>As a <b>user</b>, I want this.</p>")).toBe("As a user, I want this.");
-  });
-
-  it("turns block ends into line breaks rather than running words together", () => {
+  it("turns the editor's markup back into a sentence", () => {
     expect(stripHtml("<p>One</p><p>Two</p>")).toBe("One\nTwo");
-  });
-
-  it("decodes the entities a rich-text editor produces", () => {
-    expect(stripHtml("a &amp; b &lt;c&gt; &quot;d&quot; &#39;e&#39;&nbsp;f")).toBe(`a & b <c> "d" 'e' f`);
-  });
-});
-
-describe("asking for JSON", () => {
-  it("constrains the answer with a schema rather than hoping", async () => {
-    answers({ criteria: [] });
-    await run("acceptance_criteria", { projectId: 1, storyId: 7 });
-
-    expect(request().responseFormat).toMatchObject({ type: "json_object" });
-    expect(request().responseFormat.jsonSchema.required).toContain("criteria");
-  });
-
-  // structured output is a strong constraint, not a guarantee
-  it("still reads an answer the model wrapped in a code fence", async () => {
-    answers('```json\n{"criteria":[{"title":"T","description":"D"}]}\n```');
-
-    const { result } = await run("acceptance_criteria", { projectId: 1, storyId: 7 });
-
-    expect(result.criteria).toEqual([{ title: "T", description: "D" }]);
-  });
-
-  it("reports an unusable answer as the provider's fault, not the caller's", async () => {
-    answers("I'm afraid I can't do that.");
-
-    await expect(run("acceptance_criteria", { projectId: 1, storyId: 7 })).rejects.toMatchObject({
-      statusCode: 502,
-    });
-  });
-
-  it("reports an empty answer the same way", async () => {
-    mockAsk.mockResolvedValue({ content: "" });
-
-    await expect(run("acceptance_criteria", { projectId: 1, storyId: 7 })).rejects.toMatchObject({
-      statusCode: 502,
-    });
-  });
-});
-
-describe("generating acceptance criteria", () => {
-  it("shows the model the story, without its markup", async () => {
-    answers({ criteria: [] });
-    await run("acceptance_criteria", { projectId: 1, storyId: 7 });
-
-    expect(instruction()).toContain("Password reset never arrives");
-    expect(instruction()).toContain("Users report the reset email & link never turn up.");
-    expect(instruction()).not.toContain("<p>");
-  });
-
-  it("states the Given/When/Then format it wants", async () => {
-    answers({ criteria: [] });
-    await run("acceptance_criteria", { projectId: 1, storyId: 7 });
-
-    expect(instruction()).toContain(CRITERION_DESCRIPTION);
-  });
-
-  it("returns the criteria, trimmed", async () => {
-    answers({
-      criteria: [
-        { title: "  Email arrives  ", description: "  Given a registered user, when they request a reset, then an email arrives.  " },
-      ],
-    });
-
-    const { result } = await run("acceptance_criteria", { projectId: 1, storyId: 7 });
-
-    expect(result.criteria).toEqual([
-      { title: "Email arrives", description: "Given a registered user, when they request a reset, then an email arrives." },
-    ]);
-    expect(result.story).toEqual({ id: 7, title: "Password reset never arrives" });
-  });
-
-  // the failure that would make the button useless on a story anyone has
-  // already worked on
-  it("tells the model what the story already has, so it does not repeat it", async () => {
-    mockNimbleApi.mockImplementation(async (path) => {
-      if (path === "/projects/1/stories/7") {
-        return { ...story, acceptanceCriteria: [{ id: 1, title: "Email arrives" }] };
-      }
-      return project;
-    });
-    answers({ criteria: [] });
-
-    await run("acceptance_criteria", { projectId: 1, storyId: 7 });
-
-    expect(instruction()).toContain("do not restate or rephrase");
-    expect(instruction()).toContain("- Email arrives");
-  });
-
-  it("saves nothing", async () => {
-    answers({ criteria: [{ title: "T", description: "D" }] });
-    await run("acceptance_criteria", { projectId: 1, storyId: 7 });
-
-    const writes = mockNimbleApi.mock.calls.filter(([, options]) => options?.method && options.method !== "GET");
-    expect(writes).toEqual([]);
-  });
-});
-
-describe("rewriting a description", () => {
-  it("asks for the house format and hands back both versions", async () => {
-    answers({ description: "As a user, when I request a password reset, I want the email to arrive, so that I can get back in." });
-
-    const { result } = await run("story_description", { projectId: 1, storyId: 7 });
-
-    expect(instruction()).toContain(STORY_DESCRIPTION);
-    expect(result.original).toBe("Users report the reset email & link never turn up.");
-    expect(result.description).toMatch(/^As a user, when I request/);
-  });
-
-  // the create form has no story to read from yet
-  it("works from a title alone, with no story saved", async () => {
-    answers({ description: "As a user, when I log in, I want to stay signed in, so that I am not asked twice." });
-
-    const { result } = await run("story_description", { projectId: 1, title: "Stay signed in" });
-
-    expect(result.storyId).toBeNull();
-    expect(instruction()).toContain("Stay signed in");
-    expect(instruction()).toContain("no description yet");
-  });
-
-  it("refuses when given neither a story nor a title", async () => {
-    const outcome = await run("story_description", { projectId: 1 });
-
-    expect(outcome).toMatchObject({ ok: false, reason: "invalid" });
-    expect(mockAsk).not.toHaveBeenCalled();
-  });
-});
-
-describe("drafting a story from one line", () => {
-  const draft = {
-    title: "Send password reset emails reliably",
-    description: "As a user, when I request a password reset, I want the email to arrive, so that I can get back in.",
-    type: "Bug",
-    priority: "High",
-    criteria: [{ title: "Email arrives", description: "Given a registered user, when they request a reset, then an email arrives." }],
-  };
-
-  it("fills in every field the create form has", async () => {
-    answers(draft);
-
-    const { result } = await run("story_draft", { projectId: 1, prompt: "users can't reset passwords" });
-
-    expect(result).toMatchObject({
-      title: "Send password reset emails reliably",
-      typeId: 20,
-      type: "Bug",
-      priority: "High",
-    });
-    expect(result.criteria).toHaveLength(1);
-  });
-
-  // the model picks a type by name; the form needs its id
-  it("offers only the project's own types, and resolves the one chosen", async () => {
-    answers(draft);
-    await run("story_draft", { projectId: 1, prompt: "users can't reset passwords" });
-
-    expect(request().responseFormat.jsonSchema.properties.type.enum).toEqual(["Bug", "Feature"]);
-  });
-
-  it("drops a type that is not one of the project's rather than guessing", async () => {
-    answers({ ...draft, type: "Chore" });
-
-    const { result } = await run("story_draft", { projectId: 1, prompt: "tidy up" });
-
-    expect(result.typeId).toBeNull();
-    expect(result.type).toBeNull();
-    // everything else still arrives, so the form opens filled in
-    expect(result.title).toBe("Send password reset emails reliably");
-  });
-
-  it("drops a priority that is not one of the four", async () => {
-    answers({ ...draft, priority: "Urgent" });
-
-    const { result } = await run("story_draft", { projectId: 1, prompt: "tidy up" });
-
-    expect(result.priority).toBeNull();
-  });
-
-  it("asks for no type at all on a project that defines none", async () => {
-    mockNimbleApi.mockResolvedValue({ ...project, storyType: [] });
-    answers({ ...draft, type: undefined });
-
-    await run("story_draft", { projectId: 1, prompt: "users can't reset passwords" });
-
-    expect(request().responseFormat.jsonSchema.properties.type).toBeUndefined();
-    expect(request().responseFormat.jsonSchema.required).not.toContain("type");
-  });
-
-  it("refuses a prompt too short to mean anything", async () => {
-    const outcome = await run("story_draft", { projectId: 1, prompt: "x" });
-
-    expect(outcome).toMatchObject({ ok: false, reason: "invalid" });
-    expect(mockAsk).not.toHaveBeenCalled();
-  });
-});
-
-describe("runGeneration", () => {
-  it("names nothing it cannot generate", async () => {
-    const outcome = await run("interpretive_dance", { projectId: 1 });
-
-    expect(outcome).toMatchObject({ ok: false, reason: "unknown" });
-    expect(mockAsk).not.toHaveBeenCalled();
-  });
-
-  it("fills ids in from the page the caller is on", async () => {
-    answers({ criteria: [] });
-
-    const outcome = await run("acceptance_criteria", {}, { projectId: 1, storyId: 7, sprintId: null });
-
-    expect(outcome.ok).toBe(true);
-  });
-
-  it("lets an explicit argument win over the page", async () => {
-    answers({ criteria: [] });
-
-    const outcome = await run("acceptance_criteria", { storyId: 999 }, { projectId: 1, storyId: 7 });
-
-    expect(outcome).toMatchObject({ ok: false, reason: "failed" });
-    expect(outcome.error).toMatch(/stories\/999/);
-  });
-
-  // being told a story does not exist is something the caller can fix; the
-  // provider falling over is not
-  it("separates Nimble's refusals from the provider's", async () => {
-    answers({ criteria: [] });
-    const notFound = await run("acceptance_criteria", { projectId: 1, storyId: 404 });
-    expect(notFound).toMatchObject({ ok: false, reason: "failed" });
-
-    mockAsk.mockRejectedValue(Object.assign(new Error("rate limited"), { statusCode: 429 }));
-    await expect(run("acceptance_criteria", { projectId: 1, storyId: 7 })).rejects.toMatchObject({
-      statusCode: 429,
-    });
-  });
-
-  it("offers exactly the three the pages use", () => {
-    expect(KINDS).toEqual(["acceptance_criteria", "story_description", "story_draft"]);
+    expect(stripHtml("a &amp; b &lt;c&gt;")).toBe("a & b <c>");
+    expect(stripHtml("<b>bold</b>&nbsp;text")).toBe("bold text");
+    expect(stripHtml(null)).toBe("");
   });
 });

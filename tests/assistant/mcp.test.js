@@ -1,192 +1,259 @@
-// The assistant reaches its tools over MCP, in memory, rather than calling the
-// registry directly. That hop is only worth its keep if it is faithful: the
-// same tools, the same schemas, the same results, and refusals the model can
-// still read and correct. This pins all four, and pins the assistant's view to
-// the one an outside client gets.
+// Nimble as an MCP server.
+//
+// Driven over a real in-memory transport with a real MCP client, so this
+// exercises the protocol rather than the function underneath it: what an
+// outside client (Claude Desktop, the inspector) is actually offered.
 
-const { buildMcpServer, openSession } = require("../../app/assistant/mcp");
-const { TOOLS, toolSpecs } = require("../../app/assistant/tools");
+const { Client } = require("@modelcontextprotocol/sdk/client/index.js");
+const { InMemoryTransport } = require("@modelcontextprotocol/sdk/inMemory.js");
 
-const project = {
-  id: 1,
-  title: "Atlas",
-  storyState: [
-    { id: 10, name: "Not Started", order: 0 },
-    { id: 11, name: "Done", order: 3 },
-  ],
-  storyType: [{ id: 20, name: "Bug" }],
-  projectMembers: [{ userId: 5, user: { firstName: "Erin", lastName: "Engineer", email: "erin@x.com" } }],
-  sprint: [],
-  repository: [],
-  completedStateId: 11,
-};
+const { buildMcpServer, openSession } = require("../../app/assistant");
+const { TOOLS } = require("../../app/assistant/tools");
+const { fakeApi } = require("./fixture");
 
-/** A stand-in Nimble API, so a session can be driven without a server. */
-function mockApi(routes = {}) {
-  return jest.fn(async (path, options = {}) => {
-    const key = `${options.method ?? "GET"} ${path}`;
-    if (key in routes) {
-      const value = routes[key];
-      return typeof value === "function" ? value(options.body) : value;
-    }
-    throw new Error(`Nothing at ${path} (HTTP 404)`);
+/** A client and a server linked in memory, both acting as one user. */
+async function connect(userId = 1) {
+  const { api, db, calls } = fakeApi(userId);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+  const server = buildMcpServer({ api, userId });
+  const client = new Client({ name: "test", version: "1.0.0" });
+
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+  return {
+    client,
+    db,
+    calls,
+    close: () => Promise.all([client.close(), server.close()]),
+  };
+}
+
+const textOf = (response) =>
+  (response.content ?? []).filter((part) => part.type === "text").map((part) => part.text).join("\n");
+
+let session;
+
+afterEach(async () => {
+  await session?.close();
+  session = null;
+});
+
+describe("tools/list", () => {
+  it("advertises every tool in the registry", async () => {
+    session = await connect();
+    const { tools } = await session.client.listTools();
+
+    expect(tools.map((tool) => tool.name).sort()).toEqual(TOOLS.map((tool) => tool.name).sort());
   });
-}
 
-const ctx = (routes) => ({ api: mockApi({ "GET /projects/1": project, ...routes }), userId: 5 });
+  it("carries each tool's description and input schema", async () => {
+    session = await connect();
+    const { tools } = await session.client.listTools();
+    const sprints = tools.find((tool) => tool.name === "get_sprints");
 
-/** Runs `work` against an open session and always closes it. */
-async function withSession(context, work) {
-  const session = await openSession(context);
-  try {
-    return await work(session);
-  } finally {
-    await session.close();
-  }
-}
+    expect(sprints.description).toContain("sprint");
+    expect(sprints.inputSchema.properties.projectId).toBeDefined();
+    expect(sprints.inputSchema.required).toEqual(["projectId"]);
+  });
 
-describe("what the protocol advertises", () => {
-  it("offers every tool the registry has, and nothing else", async () => {
-    const specs = await withSession(ctx(), (session) => session.listTools());
+  it("marks the read-only tools read-only, and the writes not", async () => {
+    session = await connect();
+    const { tools } = await session.client.listTools();
+
+    const readOnly = (name) => tools.find((tool) => tool.name === name).annotations.readOnlyHint;
+
+    expect(readOnly("get_my_work")).toBe(true);
+    expect(readOnly("find_stories")).toBe(true);
+    expect(readOnly("create_story")).toBe(false);
+    expect(readOnly("add_acceptance_criteria")).toBe(false);
+  });
+});
+
+describe("tools/call", () => {
+  it("returns a result the client can parse back", async () => {
+    session = await connect();
+
+    const response = await session.client.callTool({
+      name: "get_story",
+      arguments: { projectId: 1, storyId: 70 },
+    });
+
+    expect(response.isError).toBeFalsy();
+    expect(JSON.parse(textOf(response))).toMatchObject({
+      id: 70,
+      title: "There's an issue with the login page",
+      state: "In Progress",
+    });
+  });
+
+  it("runs a write and it actually lands", async () => {
+    session = await connect();
+
+    const response = await session.client.callTool({
+      name: "create_story",
+      arguments: {
+        projectId: 1,
+        title: "From an MCP client",
+        description: "As a user, when I use MCP, I want it to work, so that I can automate.",
+      },
+    });
+
+    const created = JSON.parse(textOf(response));
+    expect(session.db.rawStories.find((story) => story.id === created.id).title).toBe("From an MCP client");
+  });
+
+  it("reports a tool's refusal as an error the client can read", async () => {
+    session = await connect();
+
+    const response = await session.client.callTool({
+      name: "get_story",
+      arguments: { projectId: 1, storyId: 999 },
+    });
+
+    expect(response.isError).toBe(true);
+    expect(textOf(response)).toContain("No story 999");
+  });
+
+  it("acts as the user it was built for, and no further", async () => {
+    // Dan is in Beacon only, so Atlas is not his to read
+    session = await connect(7);
+
+    const response = await session.client.callTool({
+      name: "get_projects",
+      arguments: { projectId: 1 },
+    });
+
+    expect(response.isError).toBe(true);
+    expect(textOf(response)).toContain("not a member of project 1");
+  });
+
+  it("refuses arguments that do not fit the schema", async () => {
+    session = await connect();
+
+    const response = await session.client
+      .callTool({ name: "get_story", arguments: { projectId: 1 } })
+      .catch((err) => ({ isError: true, content: [{ type: "text", text: err.message }] }));
+
+    expect(response.isError).toBe(true);
+  });
+});
+
+// This is the road the chat panel actually takes. `openSession` builds an MCP
+// client, connects it to Nimble's own MCP server, and every tool the assistant
+// runs goes over the protocol — so the path a user exercises on every question
+// is the same one Claude Desktop gets.
+describe("the client the app itself builds", () => {
+  let app;
+
+  const open = async (userId = 1) => {
+    const { api, db, calls } = fakeApi(userId);
+    app = await openSession({ api, userId });
+    return { db, calls };
+  };
+
+  afterEach(async () => {
+    await app?.close();
+    app = null;
+  });
+
+  it("reads its tool list from the protocol, not from the registry", async () => {
+    await open();
+    const specs = await app.listTools();
 
     expect(specs.map((spec) => spec.name).sort()).toEqual(TOOLS.map((tool) => tool.name).sort());
-  });
-
-  // the panel marks a write differently, and the prompt only offers to change
-  // things when it is told it can, so this flag has to survive the crossing
-  it("keeps the write flag, carried as readOnlyHint", async () => {
-    const specs = await withSession(ctx(), (session) => session.listTools());
-    const writes = specs.filter((spec) => spec.write).map((spec) => spec.name).sort();
-
-    expect(writes).toEqual(TOOLS.filter((tool) => tool.write).map((tool) => tool.name).sort());
-  });
-
-  // the model is shown what tools/list says, so the noise has to come off there
-  // too — not only on the way out of the registry
-  it("strips the schema noise before the model sees it", async () => {
-    const specs = await withSession(ctx(), (session) => session.listTools());
-    const json = JSON.stringify(specs);
-
-    expect(json).not.toContain("9007199254740991");
-    expect(json).not.toContain("$schema");
-  });
-
-  it("describes each tool well enough to choose it", async () => {
-    const specs = await withSession(ctx(), (session) => session.listTools());
-
     for (const spec of specs) {
       expect(spec.description.length).toBeGreaterThan(40);
       expect(spec.parameters.type).toBe("object");
     }
   });
 
-  // the whole reason the assistant goes through MCP: one advertisement, so
-  // Claude Desktop and Cohere cannot be looking at different tools
-  it("matches what the registry would have offered directly", async () => {
-    const specs = await withSession(ctx(), (session) => session.listTools());
-    const byName = new Map(specs.map((spec) => [spec.name, spec]));
+  it("carries the write flag across, from the server's annotations", async () => {
+    await open();
+    const writes = (await app.listTools()).filter((spec) => spec.write).map((spec) => spec.name);
 
-    for (const direct of toolSpecs()) {
-      expect(byName.get(direct.name).parameters).toEqual(direct.parameters);
-    }
+    expect(writes.sort()).toEqual(["add_acceptance_criteria", "create_story"]);
   });
-});
 
-describe("results coming back", () => {
-  it("hands back an object as an object, not as text", async () => {
-    const outcome = await withSession(ctx(), (session) =>
-      session.callTool("get_project", { projectId: 1 }),
-    );
+  it("tidies the schema the model is shown", async () => {
+    await open();
+    const story = (await app.listTools()).find((spec) => spec.name === "get_story");
+
+    // the SDK builds inputSchema from Zod, which carries the safe-integer range
+    expect(story.parameters.properties.storyId.minimum).toBeUndefined();
+    expect(story.parameters.properties.storyId.maximum).toBeUndefined();
+    expect(story.parameters.$schema).toBeUndefined();
+  });
+
+  it("returns a parsed result, ready for the loop", async () => {
+    await open();
+    const outcome = await app.callTool("get_story", { projectId: 1, storyId: 70 });
 
     expect(outcome.ok).toBe(true);
-    expect(outcome.result).toMatchObject({ id: 1, title: "Atlas" });
-    expect(outcome.result.states).toEqual([
-      { id: 10, name: "Not Started", order: 0 },
-      { id: 11, name: "Done", order: 3 },
-    ]);
+    expect(outcome.result).toMatchObject({ id: 70, state: "In Progress" });
   });
 
-  // structuredContent has to be an object, so a list travels as text and is
-  // parsed back — it must still arrive as an array
-  it("hands back a list as a list", async () => {
-    const outcome = await withSession(
-      ctx({ "GET /projects/1/sprints": [{ id: 3, title: "Sprint 3", status: "Active" }] }),
-      (session) => session.callTool("list_sprints", { projectId: 1 }),
-    );
+  it("runs a write over the protocol and it lands", async () => {
+    const { db } = await open();
+
+    const outcome = await app.callTool("create_story", {
+      projectId: 1,
+      title: "Straight through MCP",
+      description: "As a user, when I ask the panel, I want it to work, so that I get an answer.",
+    });
 
     expect(outcome.ok).toBe(true);
-    expect(Array.isArray(outcome.result)).toBe(true);
-    expect(outcome.result[0]).toMatchObject({ id: 3, title: "Sprint 3" });
+    expect(db.rawStories.find((story) => story.id === outcome.result.id).title).toBe("Straight through MCP");
   });
-});
 
-describe("refusals the model has to be able to act on", () => {
-  it("reports an API failure as an outcome, carrying its message", async () => {
-    const outcome = await withSession(ctx(), (session) =>
-      session.callTool("get_project", { projectId: 99 }),
-    );
+  // The loop reads a refusal and corrects itself on the next turn, so neither
+  // a tool's complaint nor the protocol's may arrive as an exception.
+  it("reports a tool's refusal as an outcome rather than throwing", async () => {
+    await open();
+    const outcome = await app.callTool("get_story", { projectId: 1, storyId: 999 });
 
     expect(outcome.ok).toBe(false);
-    expect(outcome.error).toContain("Nothing at /projects/99");
-    // the protocol's own framing is no use to the model
-    expect(outcome.error).not.toContain("MCP error");
+    expect(outcome.error).toContain("No story 999");
   });
 
-  // the protocol answers an unknown name with little more than the name; the
-  // way out is the list of names that do exist
-  it("answers an unknown tool with the ones that exist", async () => {
-    const outcome = await withSession(ctx(), (session) => session.callTool("delete_everything", {}));
+  it("reports arguments that do not fit as an outcome too, without the frame number", async () => {
+    await open();
+    const outcome = await app.callTool("get_story", { projectId: 1 });
 
     expect(outcome.ok).toBe(false);
-    expect(outcome.error).toContain('There is no tool called "delete_everything"');
-    expect(outcome.error).toContain("get_project");
+    expect(outcome.error).not.toMatch(/^MCP error/);
+    expect(outcome.error).toMatch(/storyId/i);
   });
 
-  it("turns arguments that do not fit into something readable", async () => {
-    const outcome = await withSession(ctx(), (session) =>
-      session.callTool("get_project", { projectId: "the first one" }),
-    );
+  it("reports an unknown tool as an outcome", async () => {
+    await open();
+    const outcome = await app.callTool("get_vibes", {});
 
     expect(outcome.ok).toBe(false);
-    expect(outcome.error).toMatch(/projectId/);
-    expect(outcome.error).not.toContain("MCP error");
+    expect(outcome.error).not.toMatch(/^MCP error/);
   });
 
-  it("never throws, whatever it is handed", async () => {
-    await withSession(ctx(), async (session) => {
-      await expect(session.callTool("get_project", undefined)).resolves.toMatchObject({ ok: false });
-      await expect(session.callTool("", {})).resolves.toMatchObject({ ok: false });
-    });
-  });
-});
+  it("defaults missing arguments to an empty object", async () => {
+    await open();
+    const outcome = await app.callTool("get_my_work");
 
-// a session carries one user's token; two callers must not share one
-describe("who a session acts as", () => {
-  it("binds each session to its own caller", async () => {
-    const erin = ctx();
-    const other = ctx();
-
-    await withSession(erin, (session) => session.callTool("get_project", { projectId: 1 }));
-    await withSession(other, (session) => session.callTool("get_project", { projectId: 1 }));
-
-    expect(erin.api).toHaveBeenCalledTimes(1);
-    expect(other.api).toHaveBeenCalledTimes(1);
+    expect(outcome.ok).toBe(true);
+    expect(outcome.result.assigned).toBeDefined();
   });
 
-  it("stops answering once it is closed", async () => {
-    const session = await openSession(ctx());
-    await session.close();
+  it("is bound to its own user, so it sees only what they can", async () => {
+    await open(7); // Dan is in Beacon only
+    const outcome = await app.callTool("get_projects", { projectId: 1 });
 
-    await expect(session.callTool("get_project", { projectId: 1 })).resolves.toMatchObject({
-      ok: false,
-    });
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error).toContain("not a member of project 1");
   });
-});
 
-describe("the server the stdio adapter serves", () => {
-  it("builds without a transport, so mcp/server.mjs only has to connect one", () => {
-    const server = buildMcpServer(ctx());
+  it("closes cleanly, so a session does not outlive its request", async () => {
+    await open();
+    await app.close();
 
-    expect(typeof server.connect).toBe("function");
+    await expect(app.callTool("get_my_work", {})).resolves.toMatchObject({ ok: false });
+    app = null;
   });
 });

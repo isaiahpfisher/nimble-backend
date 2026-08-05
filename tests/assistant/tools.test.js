@@ -1,637 +1,511 @@
-// The registry is the contract between the model and Nimble's API: it decides
-// what the model is offered, refuses arguments that do not fit, and turns every
-// failure into something the model can read and correct.
+// The tool registry, run against a fake Nimble.
+//
+// These are the answers the assistant is actually built to give, so they are
+// tested through runTool — the same door the chat loop and MCP both use,
+// including its argument validation and its refusal-as-a-value contract.
 
-const { TOOLS, toolSpecs, runTool } = require("../../app/assistant/tools");
-const { STORY_DESCRIPTION, CRITERION_DESCRIPTION } = require("../../app/assistant/rules");
+const {
+  runTool,
+  toolSpecs,
+  TOOLS,
+  matchStories,
+  resolveByName,
+  sprintProgress,
+  isManager,
+  isDone,
+  LIST_CAP,
+} = require("../../app/assistant/tools");
 
-/** A stand-in Nimble API, so a tool can be run without a server. */
-const project = {
-  id: 1,
-  title: "Atlas",
-  storyState: [
-    { id: 10, name: "Not Started", order: 0 },
-    { id: 11, name: "Done", order: 3 },
-  ],
-  storyType: [{ id: 20, name: "Bug" }],
-  projectMembers: [{ userId: 5, user: { firstName: "Erin", lastName: "Engineer", email: "erin@x.com" } }],
-  sprint: [],
-  repository: [],
-  completedStateId: 11,
+const { fakeApi } = require("./fixture");
+
+const ctx = (userId = 1) => {
+  const { api, calls, db } = fakeApi(userId);
+  return { ctx: { api, userId }, calls, db };
 };
 
-function mockApi(routes = {}) {
-  return jest.fn(async (path, options = {}) => {
-    const key = `${options.method ?? "GET"} ${path}`;
-    if (key in routes) {
-      const value = routes[key];
-      return typeof value === "function" ? value(options.body) : value;
-    }
-    throw new Error(`Nothing at ${path} (HTTP 404)`);
-  });
-}
+const run = (name, args, context) => runTool(name, args, context);
 
-const ctx = (routes) => ({ api: mockApi({ "GET /projects/1": project, ...routes }), userId: 5 });
+describe("the registry", () => {
+  it("advertises every tool with a description and a schema", () => {
+    const specs = toolSpecs();
 
-describe("the tool list", () => {
-  it("gives every tool a name, a description and a schema", () => {
-    for (const spec of toolSpecs()) {
-      expect(spec.name).toMatch(/^[a-z_]+$/);
+    expect(specs).toHaveLength(TOOLS.length);
+    for (const spec of specs) {
+      expect(spec.name).toMatch(/^[a-z][a-z_]{2,49}$/);
       expect(spec.description.length).toBeGreaterThan(40);
       expect(spec.parameters.type).toBe("object");
     }
   });
 
-  it("has no two tools with the same name", () => {
-    const names = TOOLS.map((tool) => tool.name);
-    expect(new Set(names).size).toBe(names.length);
+  it("flags exactly the two tools that write", () => {
+    const writes = toolSpecs().filter((spec) => spec.write).map((spec) => spec.name);
+    expect(writes.sort()).toEqual(["add_acceptance_criteria", "create_story"]);
   });
 
-  // deleting is off-limits by construction, not by instruction
-  it("offers nothing that deletes", () => {
-    expect(TOOLS.filter((tool) => /delete|remove|destroy/.test(tool.name))).toEqual([]);
+  it("strips the safe-integer bounds Zod puts on every int", () => {
+    const schema = toolSpecs().find((spec) => spec.name === "get_story").parameters;
+
+    expect(schema.properties.storyId.minimum).toBeUndefined();
+    expect(schema.properties.storyId.maximum).toBeUndefined();
+    expect(schema.required).toEqual(expect.arrayContaining(["projectId", "storyId"]));
   });
 
-  // the safe-integer bounds Zod emits for every int are true, useless, and
-  // repeated in every definition the model has to read
-  it("does not ship the schema noise Zod adds to integers", () => {
-    const json = JSON.stringify(toolSpecs());
-
-    expect(json).not.toContain("9007199254740991");
-    expect(json).not.toContain("$schema");
-  });
-
-  // The house style for the two prose fields the assistant ever composes. It
-  // has to reach the model on the field itself, not only in the prompt — that
-  // is what it is reading while it fills the argument in.
-  describe("the description formats", () => {
-    const describes = (name, field) => {
-      const { properties } = toolSpecs().find((spec) => spec.name === name).parameters;
-      // add_acceptance_criteria takes a list, so its prose field hangs off the
-      // array's items rather than off the tool itself
-      return (properties.criteria?.items?.properties ?? properties)[field].description;
-    };
-
-    it.each(["create_story", "update_story"])("puts the user story shape on %s", (name) => {
-      expect(describes(name, "description")).toContain(STORY_DESCRIPTION);
-    });
-
-    it.each(["add_acceptance_criteria", "update_acceptance_criterion"])(
-      "puts Given/When/Then on %s",
-      (name) => {
-        expect(describes(name, "description")).toContain(CRITERION_DESCRIPTION);
-      },
-    );
-
-    it("keeps both formats stated in exactly one place", () => {
-      expect(STORY_DESCRIPTION).toBe("As a <who>, when I <when>, I want to <what>, so that <why>.");
-      expect(CRITERION_DESCRIPTION).toBe("Given <starting state>, when <action>, then <observable result>.");
-    });
-  });
-});
-
-describe("runTool", () => {
-  it("names the alternatives when asked for a tool that does not exist", async () => {
-    const outcome = await runTool("delete_everything", {}, ctx());
-
-    expect(outcome).toMatchObject({ ok: false });
-    expect(outcome.error).toMatch(/no tool called "delete_everything"/);
-    expect(outcome.error).toMatch(/get_story/);
-  });
-
-  it("refuses arguments that do not fit the schema, saying which", async () => {
-    const outcome = await runTool("get_story", { projectId: "one" }, ctx());
+  it("reports an unknown tool as a value, listing the ones that exist", async () => {
+    const outcome = await run("get_vibes", {}, ctx().ctx);
 
     expect(outcome.ok).toBe(false);
-    expect(outcome.error).toMatch(/projectId/);
-    expect(outcome.error).toMatch(/storyId/);
+    expect(outcome.error).toContain('There is no tool called "get_vibes"');
+    expect(outcome.error).toContain("get_my_work");
   });
 
-  it("applies the schema's defaults rather than making the model send them", async () => {
-    const api = mockApi({ "GET /projects/1/stories/7/activity": [] });
-    await runTool("get_story_activity", { projectId: 1, storyId: 7 }, { api, userId: 5 });
+  it("reports bad arguments as a value rather than throwing", async () => {
+    const outcome = await run("get_story", { projectId: "one", storyId: 70 }, ctx().ctx);
 
-    // limit defaults to 30 and is applied here, not asked for
-    expect(api).toHaveBeenCalledWith("/projects/1/stories/7/activity");
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error).toContain("Invalid arguments for get_story");
+    expect(outcome.error).toContain("projectId");
   });
 
-  it("reports an API failure as a value, not an exception", async () => {
-    const outcome = await runTool("get_story", { projectId: 9, storyId: 1 }, ctx());
+  it("turns an API refusal into something the model can read", async () => {
+    const outcome = await run("get_story", { projectId: 1, storyId: 999 }, ctx().ctx);
 
-    expect(outcome).toEqual({ ok: false, error: "Nothing at /projects/9/stories/1 (HTTP 404)" });
-  });
-
-  it("drops fields the model made up rather than forwarding them", async () => {
-    const api = mockApi({ "GET /projects/1/backlog": [] });
-    await runTool("get_backlog", { projectId: 1, sortBy: "vibes" }, { api, userId: 5 });
-
-    expect(api).toHaveBeenCalledWith("/projects/1/backlog");
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error).toContain("No story 999");
   });
 });
 
-describe("who is on my projects", () => {
-  const member = (userId, name, isManager) => ({
-    userId,
-    isManager,
-    user: { firstName: name, lastName: "X", email: `${name.toLowerCase()}@x.com` },
-  });
-
-  const boards = {
-    "GET /users/me/projects": [
-      { id: 3, title: "Atlas" },
-      { id: 4, title: "Nimble" },
-    ],
-    "GET /projects/3": {
-      id: 3,
-      title: "Atlas",
-      projectMembers: [member(5, "Isaiah", "0"), member(2, "Frank", "1"), member(9, "Dana", "1")],
-    },
-    "GET /projects/4": {
-      id: 4,
-      title: "Nimble",
-      projectMembers: [member(5, "Isaiah", "1"), member(2, "Frank", "1")],
-    },
-  };
-
-  const people = (routes = boards) => ({ api: mockApi(routes), userId: 5 });
-
-  // the headline question, answered without being told which project
-  it("rolls managers up across every project, each listed once", async () => {
-    const { result } = await runTool("get_people", {}, people());
-
-    expect(result.managers.map((m) => [m.name, m.manages])).toEqual([
-      ["Frank X", ["Atlas", "Nimble"]],
-      ["Dana X", ["Atlas"]],
-      ["Isaiah X", ["Nimble"]],
-    ]);
-  });
-
-  // so the assistant does not report the user as their own manager
-  it("flags the user among them rather than hiding them", async () => {
-    const { result } = await runTool("get_people", {}, people());
-
-    expect(result.managers.find((m) => m.name === "Isaiah X").isYou).toBe(true);
-    expect(result.managers.find((m) => m.name === "Frank X").isYou).toBe(false);
-  });
-
-  it("narrows to one project when asked", async () => {
-    const { result } = await runTool("get_people", { projectId: 3 }, people());
-
-    expect(result.projects.map((p) => p.title)).toEqual(["Atlas"]);
-    expect(result.managers.map((m) => m.name)).toEqual(["Frank X", "Dana X"]);
-  });
-
-  it("carries each project's url, so the answer can link it", async () => {
-    const { result } = await runTool("get_people", { projectId: 4 }, people());
-
-    expect(result.projects[0]).toMatchObject({ id: 4, title: "Nimble", url: "/projects/4" });
-  });
-
-  it("says so plainly when a project has no manager at all", async () => {
-    const { result } = await runTool("get_people", { projectId: 3 }, people({
-      ...boards,
-      "GET /projects/3": { id: 3, title: "Atlas", projectMembers: [member(5, "Isaiah", "0")] },
-    }));
-
-    expect(result.managers).toEqual([]);
-    expect(result.projects[0].people).toHaveLength(1);
-  });
-
-  it("refuses a project they do not belong to, naming the ones they do", async () => {
-    const outcome = await runTool("get_people", { projectId: 99 }, people());
-
-    expect(outcome).toMatchObject({ ok: false });
-    expect(outcome.error).toMatch(/not a member of project 99/);
-    expect(outcome.error).toMatch(/3 = Atlas, 4 = Nimble/);
-  });
-
-  it("answers on the projects it can read when one of them fails", async () => {
-    const { api } = people();
-    const flaky = jest.fn(async (path, options) => {
-      if (path === "/projects/4") throw new Error("Boom (HTTP 500)");
-      return api(path, options);
-    });
-
-    const { result } = await runTool("get_people", {}, { api: flaky, userId: 5 });
-
-    expect(result.projects.map((p) => p.title)).toEqual(["Atlas"]);
-  });
-
-  // isManager is a STRING column and the update endpoint writes what it is sent
-  it.each([
-    ["1", true],
-    ["true", true],
-    ["0", false],
-    ["", false],
-    [undefined, false],
-  ])("reads isManager %s as %s", async (flag, expected) => {
-    const { result } = await runTool("get_people", { projectId: 3 }, people({
-      ...boards,
-      "GET /projects/3": { id: 3, title: "Atlas", projectMembers: [member(2, "Frank", flag)] },
-    }));
-
-    expect(result.projects[0].people[0].isManager).toBe(expected);
-  });
-});
-
-describe("creating a story", () => {
-  const created = (body) => ({ id: 7, projectId: 1, ...body });
-  const story = (fields) => ({
-    projectId: 1,
-    title: "Login bug",
-    description: "As a user, when I sign in, I want the page to load, so that I can reach my work.",
-    ...fields,
-  });
-
-  it("fills in the defaults and says which it filled", async () => {
-    const outcome = await runTool("create_story", story(), ctx({ "POST /projects/1/stories": created }));
+describe("get_projects", () => {
+  it("names the manager once, with what they manage", async () => {
+    const outcome = await run("get_projects", {}, ctx().ctx);
 
     expect(outcome.ok).toBe(true);
-    expect(outcome.result).toMatchObject({
-      created: "story",
-      defaulted: ["stateId"],
-      stateId: 10,
-      url: "/projects/1/stories/7",
-    });
+    expect(outcome.result.managers).toHaveLength(2);
+
+    const erin = outcome.result.managers.find((person) => person.name === "Erin Engineer");
+    expect(erin.manages).toEqual(["Atlas"]);
+    expect(erin.email).toBe("erin@nimble.dev");
   });
 
-  // the description is the assistant's to write, so the tool will not accept a
-  // story without one rather than quietly filing the title as the description
-  it("refuses to create a story with no description", async () => {
-    const outcome = await runTool("create_story", { projectId: 1, title: "Login bug" }, ctx());
+  it("flags the caller so they are never reported as their own manager", async () => {
+    const outcome = await run("get_projects", {}, ctx().ctx);
+    const atlas = outcome.result.projects.find((project) => project.title === "Atlas");
 
-    expect(outcome).toMatchObject({ ok: false });
-    expect(outcome.error).toMatch(/description/);
+    expect(atlas.people.find((person) => person.name === "Ada Lovelace").isYou).toBe(true);
+    expect(atlas.people.find((person) => person.name === "Erin Engineer").isYou).toBe(false);
   });
 
-  it("saves the description exactly as given", async () => {
-    const dictated = "As a reviewer, when I open a PR, I want the checks listed, so that I can act.";
-    const api = mockApi({ "GET /projects/1": project, "POST /projects/1/stories": created });
+  it("returns states, types and sprints only when asked about one project", async () => {
+    const all = await run("get_projects", {}, ctx().ctx);
+    const one = await run("get_projects", { projectId: 1 }, ctx().ctx);
 
-    await runTool("create_story", story({ description: dictated }), { api, userId: 5 });
-
-    expect(api).toHaveBeenCalledWith(
-      "/projects/1/stories",
-      expect.objectContaining({ body: expect.objectContaining({ description: dictated }) }),
-    );
+    expect(all.result.projects[0].states).toBeUndefined();
+    expect(one.result.projects[0].states.map((state) => state.name)).toEqual([
+      "Not Started",
+      "In Progress",
+      "In Review",
+      "Done",
+    ]);
+    expect(one.result.projects[0].sprints).toHaveLength(2);
   });
 
-  it("resolves a person by name, so the model never handles a user id", async () => {
-    const outcome = await runTool(
-      "create_story",
-      story({ assignee: "erin" }),
-      ctx({ "POST /projects/1/stories": created }),
-    );
-
-    expect(outcome.result.assigneeId).toBe(5);
-  });
-
-  it("refuses an id from another project and offers the real choices", async () => {
-    const outcome = await runTool("create_story", story({ stateId: 999 }), ctx());
+  it("refuses a project the user is not in, listing the ones they are", async () => {
+    const outcome = await run("get_projects", { projectId: 99 }, ctx().ctx);
 
     expect(outcome.ok).toBe(false);
-    expect(outcome.error).toBe(
-      "stateId 999 does not exist in project 1. Valid states: 10 = Not Started, 11 = Done.",
-    );
+    expect(outcome.error).toContain("not a member of project 99");
+    expect(outcome.error).toContain("Atlas");
   });
 
-  // one correction rather than two round trips
-  it("reports every bad reference at once", async () => {
-    const outcome = await runTool("create_story", story({ stateId: 999, typeId: 998 }), ctx());
-
-    expect(outcome.error).toMatch(/stateId 999/);
-    expect(outcome.error).toMatch(/typeId 998/);
-  });
-
-  it("names the members when asked for somebody who is not one", async () => {
-    const outcome = await runTool("create_story", story({ assignee: "Carol" }), ctx());
-
-    expect(outcome.error).toMatch(/Nobody called "Carol" is on this project. Members are: Erin Engineer/);
+  it("reads isManager permissively, since it is a string column", () => {
+    expect(isManager({ isManager: "1" })).toBe(true);
+    expect(isManager({ isManager: true })).toBe(true);
+    expect(isManager({ isManager: "true" })).toBe(true);
+    expect(isManager({ isManager: "0" })).toBe(false);
+    expect(isManager({})).toBe(false);
   });
 });
 
-describe("adding acceptance criteria", () => {
-  const criterion = "Given a filtered backlog, when I clear the filter, then every story returns.";
-  const second = "Given no filter, when I open the backlog, then every story is listed.";
+describe("get_sprints", () => {
+  it("lists every sprint with its dates, and measures the active one", async () => {
+    const outcome = await run("get_sprints", { projectId: 1 }, ctx().ctx);
 
-  const add = (criteria) => ({ projectId: 1, storyId: 7, criteria });
-
-  it("refuses one with no description", async () => {
-    const outcome = await runTool("add_acceptance_criteria", add([{ title: "Filter clears" }]), ctx());
-
-    expect(outcome).toMatchObject({ ok: false });
-    expect(outcome.error).toMatch(/description/);
-  });
-
-  it("refuses an empty list, rather than reporting it added nothing", async () => {
-    const outcome = await runTool("add_acceptance_criteria", add([]), ctx());
-
-    expect(outcome).toMatchObject({ ok: false });
-  });
-
-  it("saves the Given/When/Then as written, and starts it Pending", async () => {
-    const api = mockApi({
-      "POST /projects/1/stories/7/acceptanceCriteria": (body) => ({ id: 3, ...body }),
+    expect(outcome.result.sprints.map((sprint) => sprint.title)).toEqual(["Sprint 7", "Sprint 8"]);
+    expect(outcome.result.sprints[1]).toMatchObject({
+      status: "Planned",
+      startDate: "2026-08-10",
+      endDate: "2026-08-23",
     });
 
-    const outcome = await runTool(
-      "add_acceptance_criteria",
-      add([{ title: "Filter clears", description: criterion }]),
-      { api, userId: 5 },
-    );
-
-    expect(api).toHaveBeenCalledWith("/projects/1/stories/7/acceptanceCriteria", {
-      method: "POST",
-      body: { title: "Filter clears", description: criterion, status: "Pending" },
-    });
-    expect(outcome.result).toMatchObject({
-      created: "acceptanceCriteria",
-      count: 1,
-      url: "/projects/1/stories/7",
+    // sprint 200 holds stories 70 (5pts), 71 (3), 73 (2, done), 74 (unestimated)
+    expect(outcome.result.active).toMatchObject({
+      title: "Sprint 7",
+      totalPoints: 10,
+      completedPoints: 2,
+      remainingPoints: 8,
+      unestimatedStories: 1,
     });
   });
 
-  it("saves a whole set in the order it was given", async () => {
-    let next = 3;
-    const api = mockApi({
-      "POST /projects/1/stories/7/acceptanceCriteria": (body) => ({ id: next++, ...body }),
-    });
+  it("leaves out finished work from the open list", async () => {
+    const outcome = await run("get_sprints", { projectId: 1 }, ctx().ctx);
+    const open = outcome.result.active.openStories.stories.map((story) => story.id);
 
-    const outcome = await runTool(
-      "add_acceptance_criteria",
-      add([
-        { title: "Filter clears", description: criterion },
-        { title: "Unfiltered list", description: second },
-      ]),
-      { api, userId: 5 },
-    );
-
-    expect(api).toHaveBeenCalledTimes(2);
-    expect(outcome.result.count).toBe(2);
-    expect(outcome.result.criteria.map((c) => c.title)).toEqual(["Filter clears", "Unfiltered list"]);
-    expect(outcome.result.failed).toEqual([]);
+    expect(open).toEqual(expect.arrayContaining([70, 71, 74]));
+    expect(open).not.toContain(73);
   });
 
-  // the failure that matters: some of them saved, and the model is about to
-  // tell the user the story is covered
-  it("reports what saved when a later one fails", async () => {
-    let calls = 0;
-    const api = jest.fn(async (path, options) => {
-      calls += 1;
-      if (calls === 2) throw new Error("Title is required. (HTTP 400)");
-      return { id: 3, ...options.body };
-    });
-
-    const outcome = await runTool(
-      "add_acceptance_criteria",
-      add([
-        { title: "Filter clears", description: criterion },
-        { title: "Unfiltered list", description: second },
-      ]),
-      { api, userId: 5 },
-    );
+  it("still answers when there is no active sprint", async () => {
+    const outcome = await run("get_sprints", { projectId: 2 }, ctx().ctx);
 
     expect(outcome.ok).toBe(true);
-    expect(outcome.result.count).toBe(1);
-    expect(outcome.result.failed).toEqual([
-      { title: "Unfiltered list", error: "Title is required. (HTTP 400)" },
-    ]);
+    expect(outcome.result.active).toBeNull();
+    expect(outcome.result.sprints).toEqual([]);
   });
 
-  it("fails outright when nothing saved", async () => {
-    const api = jest.fn(async () => {
-      throw new Error("Story not found. (HTTP 404)");
-    });
-
-    const outcome = await runTool(
-      "add_acceptance_criteria",
-      add([{ title: "Filter clears", description: criterion }]),
-      { api, userId: 5 },
-    );
+  it("refuses a sprint that is not in the project, listing the ones that are", async () => {
+    const outcome = await run("get_sprints", { projectId: 1, sprintId: 999 }, ctx().ctx);
 
     expect(outcome.ok).toBe(false);
-    expect(outcome.error).toMatch(/No acceptance criteria were added\. Story not found/);
+    expect(outcome.error).toContain("no sprint 999");
+    expect(outcome.error).toContain("Sprint 7");
   });
 });
 
-describe("updating a story", () => {
-  it("sends only the fields that change", async () => {
-    const api = mockApi({
-      "GET /projects/1": project,
-      "PUT /projects/1/stories/7": (body) => ({ id: 7, projectId: 1, ...body }),
+describe("sprintProgress", () => {
+  const sprint = { startDate: "2026-01-01", endDate: "2026-01-11" };
+
+  it("measures in points and compares against the straight line to zero", () => {
+    const stories = [
+      { estimate: 4, completedAt: "2026-01-03T00:00:00Z", stateId: 1 },
+      { estimate: 6, completedAt: null, stateId: 1 },
+    ];
+
+    // half way through, 4 of 10 points done, so 6 left against an expected 5
+    const progress = sprintProgress(sprint, stories, null, "2026-01-06");
+
+    expect(progress).toMatchObject({
+      totalPoints: 10,
+      completedPoints: 4,
+      remainingPoints: 6,
+      percentComplete: 40,
+      daysTotal: 10,
+      daysElapsed: 5,
+      daysRemaining: 5,
+      expectedRemaining: 5,
+      pointsBehindSchedule: 1,
+      onTrack: false,
     });
-
-    const outcome = await runTool("update_story", { projectId: 1, storyId: 7, priority: "High" }, { api, userId: 5 });
-
-    expect(api).toHaveBeenCalledWith("/projects/1/stories/7", { method: "PUT", body: { priority: "High" } });
-    expect(outcome.result.changed).toEqual(["priority"]);
   });
 
-  it("passes null through, since that is how a field gets cleared", async () => {
-    const api = mockApi({
-      "GET /projects/1": project,
-      "PUT /projects/1/stories/7": (body) => ({ id: 7, projectId: 1, ...body }),
-    });
-
-    await runTool("update_story", { projectId: 1, storyId: 7, assignee: "nobody" }, { api, userId: 5 });
-
-    expect(api).toHaveBeenCalledWith("/projects/1/stories/7", { method: "PUT", body: { assigneeId: null } });
+  it("counts a story in the completed column as done even without a timestamp", () => {
+    const stories = [{ estimate: 3, completedAt: null, stateId: 13 }];
+    expect(sprintProgress(sprint, stories, 13, "2026-01-06").completedPoints).toBe(3);
+    expect(sprintProgress(sprint, stories, 99, "2026-01-06").completedPoints).toBe(0);
   });
 
-  it("asks what to change rather than writing nothing", async () => {
-    const outcome = await runTool("update_story", { projectId: 1, storyId: 7 }, ctx());
+  it("reports no percentage rather than dividing by zero", () => {
+    expect(sprintProgress(sprint, [], null, "2026-01-06").percentComplete).toBeNull();
+  });
 
-    expect(outcome).toMatchObject({ ok: false, error: expect.stringMatching(/No fields to update/) });
+  it("does not run past the end of a sprint that is over", () => {
+    const progress = sprintProgress(sprint, [{ estimate: 2 }], null, "2026-03-01");
+    expect(progress.daysElapsed).toBe(10);
+    expect(progress.daysRemaining).toBe(0);
+  });
+
+  it("agrees with isDone about what finished means", () => {
+    expect(isDone({ completedAt: "2026-01-01", stateId: 1 })).toBe(true);
+    expect(isDone({ completedAt: null, stateId: 13 }, 13)).toBe(true);
+    expect(isDone({ completedAt: null, stateId: 11 }, 13)).toBe(false);
   });
 });
 
-describe("setting a story's state", () => {
-  const atlas = {
-    id: 1,
-    title: "Atlas",
-    storyState: [
-      { id: 6, name: "To Do", order: 0 },
-      { id: 7, name: "Doing", order: 1 },
-      { id: 8, name: "Done", order: 2 },
-    ],
-    storyType: [],
-    projectMembers: [],
-    sprint: [],
-    repository: [],
-  };
+describe("get_my_work", () => {
+  it("splits what Ada builds from what she reviews, across every project", async () => {
+    const outcome = await run("get_my_work", {}, ctx(1).ctx);
 
-  const board = () =>
-    mockApi({
-      "GET /projects/1": atlas,
-      "PUT /projects/1/stories/12": (body) => ({ id: 12, projectId: 1, title: "Document env vars", ...body }),
+    expect(outcome.result.assigned.stories.map((story) => story.id)).toEqual([70, 76]);
+    expect(outcome.result.reviewing.stories.map((story) => story.id).sort()).toEqual([71, 74, 77]);
+  });
+
+  it("puts active-sprint work first, then the higher priority", async () => {
+    const outcome = await run("get_my_work", {}, ctx(1).ctx);
+    const reviewing = outcome.result.reviewing.stories;
+
+    // 74 (Blocker, active sprint) and 71 (Medium, active sprint) before 77 (no sprint)
+    expect(reviewing[0].id).toBe(74);
+    expect(reviewing[1].id).toBe(71);
+    expect(reviewing[2].id).toBe(77);
+  });
+
+  it("leaves out finished work", async () => {
+    const outcome = await run("get_my_work", {}, ctx(1).ctx);
+    // 73 is Ada's but sits in Atlas's completed state
+    expect(outcome.result.assigned.stories.map((story) => story.id)).not.toContain(73);
+  });
+
+  it("says so plainly when it does not know who is asking", async () => {
+    const outcome = await run("get_my_work", {}, ctx(null).ctx);
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error).toContain("do not know which user you are");
+  });
+
+  it("names the project each story came from", async () => {
+    const outcome = await run("get_my_work", {}, ctx(1).ctx);
+    expect(outcome.result.assigned.stories.map((story) => story.project)).toEqual(["Atlas", "Beacon"]);
+  });
+});
+
+describe("find_stories", () => {
+  it("finds a story from how someone would actually refer to it", async () => {
+    const outcome = await run("find_stories", { projectId: 1, query: "login" }, ctx().ctx);
+
+    expect(outcome.result.matched).toBe(1);
+    expect(outcome.result.stories[0].id).toBe(70);
+  });
+
+  it("matches against the description, not just the title", async () => {
+    const outcome = await run("find_stories", { projectId: 1, query: "accented" }, ctx().ctx);
+    expect(outcome.result.stories[0].id).toBe(74);
+  });
+
+  it("narrows by workflow state, by name", async () => {
+    const outcome = await run("find_stories", { projectId: 1, state: "In Progress" }, ctx().ctx);
+
+    expect(outcome.result.stories.map((story) => story.id).sort()).toEqual([70, 74]);
+  });
+
+  it("treats inSprint false as the backlog", async () => {
+    const outcome = await run("find_stories", { projectId: 1, inSprint: false }, ctx().ctx);
+    expect(outcome.result.stories.map((story) => story.id).sort()).toEqual([72, 75]);
+  });
+
+  it("lists everything when no query is given", async () => {
+    const outcome = await run("find_stories", { projectId: 1 }, ctx().ctx);
+    expect(outcome.result.matched).toBe(6);
+  });
+
+  it("refuses a state the project does not have, listing the ones it does", async () => {
+    const outcome = await run("find_stories", { projectId: 1, state: "Shipped" }, ctx().ctx);
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error).toContain('no state called "Shipped"');
+    expect(outcome.error).toContain("In Review");
+  });
+
+  it("reports the true total when the list is capped", async () => {
+    const rows = Array.from({ length: 25 }, (_, index) => ({ id: index, title: `Story ${index}` }));
+    const { capped } = require("../../app/assistant/tools");
+
+    expect(capped(rows)).toMatchObject({ matched: 25, showing: LIST_CAP, truncated: true });
+    expect(capped(rows).stories).toHaveLength(LIST_CAP);
+  });
+});
+
+describe("matchStories", () => {
+  const stories = [
+    { title: "Fix the login page", description: "", type: { name: "Bug" } },
+    { title: "Add CSV export", description: "<p>For <b>analysts</b></p>", type: { name: "Feature" } },
+  ];
+
+  it("requires every word of the query to appear somewhere", () => {
+    expect(matchStories(stories, "login page")).toHaveLength(1);
+    expect(matchStories(stories, "login export")).toHaveLength(0);
+  });
+
+  it("ignores markup in the description", () => {
+    expect(matchStories(stories, "analysts")).toHaveLength(1);
+  });
+
+  it("matches the story type", () => {
+    expect(matchStories(stories, "bug")).toHaveLength(1);
+  });
+
+  it("returns everything when there is nothing to match on", () => {
+    expect(matchStories(stories, "")).toHaveLength(2);
+    expect(matchStories(stories, undefined)).toHaveLength(2);
+  });
+});
+
+describe("resolveByName", () => {
+  const states = [
+    { id: 1, name: "To Do" },
+    { id: 2, name: "In Progress" },
+    { id: 3, name: "Done" },
+  ];
+
+  it("takes an exact name first", () => {
+    expect(resolveByName("Done", states, "state").id).toBe(3);
+    expect(resolveByName("done", states, "state").id).toBe(3);
+  });
+
+  it("falls back to a partial match", () => {
+    expect(resolveByName("progress", states, "state").id).toBe(2);
+  });
+
+  it("throws with the real choices when nothing matches", () => {
+    expect(() => resolveByName("Shipped", states, "state")).toThrow(/To Do, In Progress, Done/);
+  });
+});
+
+describe("get_story", () => {
+  it("returns the description, criteria and comments", async () => {
+    const outcome = await run("get_story", { projectId: 1, storyId: 70 }, ctx().ctx);
+
+    expect(outcome.result).toMatchObject({
+      id: 70,
+      state: "In Progress",
+      type: "Bug",
+      assignee: "Ada Lovelace",
+      reviewer: "Erin Engineer",
     });
-
-  // the reported failure: the model sent an id it had never looked up
-  it("takes the state by name, so no id is ever guessed", async () => {
-    const api = board();
-    const outcome = await runTool(
-      "set_story_state",
-      { projectId: 1, storyId: 12, state: "Doing" },
-      { api, userId: 5 },
-    );
-
-    expect(api).toHaveBeenCalledWith("/projects/1/stories/12", { method: "PUT", body: { stateId: 7 } });
-    expect(outcome.result).toMatchObject({ updated: "story", changed: ["stateId"], state: "Doing" });
+    expect(outcome.result.acceptanceCriteria.map((c) => c.title)).toEqual([
+      "Valid password works",
+      "Wrong password shows an error",
+    ]);
+    expect(outcome.result.comments[0]).toMatchObject({ by: "Erin Engineer", content: "Reproduced on staging." });
   });
+});
 
-  it("reports where it landed, not the words the user used", async () => {
-    const outcome = await runTool(
-      "set_story_state",
-      { projectId: 1, storyId: 12, state: "done!" },
-      { api: board(), userId: 5 },
-    );
+describe("create_story", () => {
+  it("creates one in the first column and says what it defaulted", async () => {
+    const { ctx: context, db } = ctx();
 
-    expect(outcome.result.state).toBe("Done");
-  });
-
-  it("refuses an id in the name field rather than moving the wrong story", async () => {
-    const outcome = await runTool(
-      "set_story_state",
-      { projectId: 1, storyId: 12, state: "5" },
-      { api: board(), userId: 5 },
-    );
-
-    expect(outcome).toMatchObject({ ok: false });
-    expect(outcome.error).toMatch(/stateId 5 does not exist/);
-  });
-
-  it("offers the project's real states when the name matches nothing", async () => {
-    const outcome = await runTool(
-      "set_story_state",
-      { projectId: 1, storyId: 12, state: "Archived" },
-      { api: board(), userId: 5 },
-    );
-
-    expect(outcome.error).toMatch(/Valid states: 6 = To Do, 7 = Doing, 8 = Done/);
-  });
-
-  it("writes nothing when the state cannot be resolved", async () => {
-    const api = board();
-    await runTool("set_story_state", { projectId: 1, storyId: 12, state: "Archived" }, { api, userId: 5 });
-
-    expect(api).not.toHaveBeenCalledWith("/projects/1/stories/12", expect.objectContaining({ method: "PUT" }));
-  });
-
-  // the same trap has to be closed on the general tool, or a combined request
-  // walks straight back into it
-  it("is also how update_story takes a state", async () => {
-    const api = board();
-    await runTool(
-      "update_story",
-      { projectId: 1, storyId: 12, state: "doing", priority: "High" },
-      { api, userId: 5 },
-    );
-
-    expect(api).toHaveBeenCalledWith("/projects/1/stories/12", {
-      method: "PUT",
-      body: { priority: "High", stateId: 7 },
-    });
-  });
-
-  it("is also how create_story takes a starting state", async () => {
-    const api = mockApi({
-      "GET /projects/1": atlas,
-      "POST /projects/1/stories": (body) => ({ id: 20, projectId: 1, ...body }),
-    });
-
-    const outcome = await runTool(
+    const outcome = await run(
       "create_story",
       {
         projectId: 1,
-        title: "New work",
-        description: "As a user, when I start, I want a first step, so that I can begin.",
-        state: "To Do",
+        title: "Fix the password reset email",
+        description: "As a user, when I reset my password, I want the email to arrive, so that I can sign in.",
       },
-      { api, userId: 5 },
+      context,
     );
-
-    expect(outcome.result.stateId).toBe(6);
-    expect(outcome.result.defaulted).not.toContain("stateId");
-  });
-});
-
-describe("moving several stories", () => {
-  it("reports each one, because a batch can partly succeed", async () => {
-    const api = mockApi({
-      "GET /projects/1": project,
-      "PUT /projects/1/stories/7": { id: 7, projectId: 1 },
-      "PUT /projects/1/stories/8": { id: 8, projectId: 1 },
-    });
-
-    const outcome = await runTool(
-      "move_stories_to_sprint",
-      { projectId: 1, storyIds: [7, 8, 9, 7], sprintId: null },
-      { api, userId: 5 },
-    );
-
-    expect(outcome.result).toMatchObject({ requested: 3, moved: 2, failed: 1 });
-    expect(outcome.result.stories.at(-1)).toMatchObject({ ok: false, storyId: 9 });
-  });
-});
-
-describe("how a sprint is going", () => {
-  // "how is the sprint going" is about the sprint that is running now. Making
-  // the model find that id first cost a turn and, on the smaller model, was
-  // where the answer was lost altogether.
-  const sprints = [
-    { id: 50, projectId: 1, title: "Sprint 6", status: "Completed", startDate: "2026-07-13", endDate: "2026-07-26" },
-    { id: 51, projectId: 1, title: "Sprint 7", status: "Active", startDate: "2026-07-27", endDate: "2026-08-09" },
-    { id: 52, projectId: 1, title: "Sprint 8", status: "Planned", startDate: "2026-08-10", endDate: "2026-08-23" },
-  ];
-
-  const withSprints = (rows = sprints, extra = {}) =>
-    mockApi({
-      "GET /projects/1": project,
-      "GET /projects/1/sprints": rows,
-      "GET /sprints/51": { ...sprints[1], story: [] },
-      "GET /sprints/52": { ...sprints[2], story: [] },
-      ...extra,
-    });
-
-  it("reads the active sprint from the project alone", async () => {
-    const api = withSprints();
-    const outcome = await runTool("get_sprint_progress", { projectId: 1 }, { api, userId: 5 });
 
     expect(outcome.ok).toBe(true);
-    expect(outcome.result).toMatchObject({ id: 51, title: "Sprint 7" });
-    expect(api).toHaveBeenCalledWith("/sprints/51");
+    expect(outcome.result.created).toBe("story");
+    expect(outcome.result.defaulted).toEqual(["state Not Started"]);
+
+    const made = db.rawStories.find((story) => story.id === outcome.result.id);
+    expect(made.stateId).toBe(10);
+    expect(made.title).toBe("Fix the password reset email");
   });
 
-  it("uses an explicit sprintId without looking for the active one", async () => {
-    const api = withSprints();
-    const outcome = await runTool("get_sprint_progress", { projectId: 1, sprintId: 52 }, { api, userId: 5 });
+  it("resolves type and state by name", async () => {
+    const { ctx: context, db } = ctx();
 
-    expect(outcome.result).toMatchObject({ id: 52 });
-    expect(api).not.toHaveBeenCalledWith("/projects/1/sprints");
+    const outcome = await run(
+      "create_story",
+      {
+        projectId: 1,
+        title: "Tidy the pipeline",
+        description: "As a developer, when I merge, I want a fast build, so that I ship sooner.",
+        type: "Chore",
+        state: "In Progress",
+        priority: "Low",
+      },
+      context,
+    );
+
+    const made = db.rawStories.find((story) => story.id === outcome.result.id);
+    expect(made.typeId).toBe(22);
+    expect(made.stateId).toBe(11);
+    expect(made.priority).toBe("Low");
+    expect(outcome.result.defaulted).toEqual([]);
   });
 
-  it("lists the real sprints when none is active, rather than failing blankly", async () => {
-    const api = withSprints([sprints[0], sprints[2]]);
-    const outcome = await runTool("get_sprint_progress", { projectId: 1 }, { api, userId: 5 });
+  it("refuses a type the project does not have rather than guessing", async () => {
+    const outcome = await run(
+      "create_story",
+      { projectId: 1, title: "X", description: "As a user...", type: "Epic" },
+      ctx().ctx,
+    );
 
     expect(outcome.ok).toBe(false);
-    expect(outcome.error).toContain("no active sprint");
-    expect(outcome.error).toContain("50 = Sprint 6");
-    expect(outcome.error).toContain("52 = Sprint 8");
+    expect(outcome.error).toContain('no type called "Epic"');
+    expect(outcome.error).toContain("Bug, Feature, Chore");
   });
 
-  it("says so plainly when the project has no sprints at all", async () => {
-    const outcome = await runTool("get_sprint_progress", { projectId: 1 }, { api: withSprints([]), userId: 5 });
-
-    expect(outcome.error).toContain("no sprints yet");
-  });
-
-  // nothing in the schema enforces one at a time
-  it("asks which when more than one sprint is active", async () => {
-    const two = [sprints[1], { ...sprints[2], status: "Active" }];
-    const outcome = await runTool("get_sprint_progress", { projectId: 1 }, { api: withSprints(two), userId: 5 });
+  it("refuses a sprint from another project", async () => {
+    const outcome = await run(
+      "create_story",
+      { projectId: 1, title: "X", description: "As a user...", sprintId: 999 },
+      ctx().ctx,
+    );
 
     expect(outcome.ok).toBe(false);
-    expect(outcome.error).toContain("more than one active sprint");
+    expect(outcome.error).toContain("Sprint 999 does not belong to project 1");
+  });
+
+  it("insists on a description, since the model is meant to write one", async () => {
+    const outcome = await run("create_story", { projectId: 1, title: "X" }, ctx().ctx);
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error).toContain("description");
+  });
+
+  it("writes nothing when a reference is wrong", async () => {
+    const { ctx: context, calls } = ctx();
+    await run(
+      "create_story",
+      { projectId: 1, title: "X", description: "As a user...", state: "Nowhere" },
+      context,
+    );
+
+    expect(calls.some((call) => call.method === "POST")).toBe(false);
+  });
+});
+
+describe("add_acceptance_criteria", () => {
+  const criteria = [
+    { title: "Empty input", description: "Given an empty form, when it is submitted, then an error shows." },
+    { title: "Happy path", description: "Given a valid form, when it is submitted, then it saves." },
+  ];
+
+  it("adds them all and reports what was created", async () => {
+    const { ctx: context, db } = ctx();
+    const outcome = await run("add_acceptance_criteria", { projectId: 1, storyId: 70, criteria }, context);
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.result.count).toBe(2);
+    expect(outcome.result.failed).toEqual([]);
+    expect(db.criteria.filter((c) => c.storyId === 70)).toHaveLength(4);
+  });
+
+  it("saves them one at a time, in the order given", async () => {
+    const { ctx: context, calls } = ctx();
+    await run("add_acceptance_criteria", { projectId: 1, storyId: 70, criteria }, context);
+
+    const posted = calls.filter((call) => call.method === "POST").map((call) => call.body.title);
+    expect(posted).toEqual(["Empty input", "Happy path"]);
+  });
+
+  it("makes new criteria Pending", async () => {
+    const { ctx: context, calls } = ctx();
+    await run("add_acceptance_criteria", { projectId: 1, storyId: 70, criteria }, context);
+
+    expect(calls.find((call) => call.method === "POST").body.status).toBe("Pending");
+  });
+
+  it("fails outright when nothing could be saved", async () => {
+    const outcome = await run(
+      "add_acceptance_criteria",
+      { projectId: 1, storyId: 999, criteria },
+      ctx().ctx,
+    );
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error).toContain("No acceptance criteria were added");
+  });
+
+  it("refuses an empty list", async () => {
+    const outcome = await run(
+      "add_acceptance_criteria",
+      { projectId: 1, storyId: 70, criteria: [] },
+      ctx().ctx,
+    );
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error).toContain("Invalid arguments");
   });
 });
