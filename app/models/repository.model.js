@@ -1,3 +1,5 @@
+const { saltSize, keySize } = require("../authentication/crypto");
+
 module.exports = (sequelize, Sequelize) => {
   const Repository = sequelize.define("repository", {
     githubId: {
@@ -7,6 +9,14 @@ module.exports = (sequelize, Sequelize) => {
     name: {
       type: Sequelize.STRING,
       allowNull: false,
+    },
+    owner: {
+      type: Sequelize.STRING,
+      allowNull: true,
+    },
+    githubToken: {
+      type: Sequelize.STRING,
+      allowNull: true, 
     },
   });
 

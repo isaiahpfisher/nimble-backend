@@ -2,6 +2,9 @@ const db = require("../models");
 const Repository = db.repository;
 const Op = db.Sequelize.Op;
 const axios = require("axios");
+const { encrypt, getSalt, hashPassword } = require("../authentication/crypto");
+const { authenticate } = require("../authentication/authentication");
+const { httpError } = require("../utils/httpUtils");
 
 exports.create = async (req, res) => {
   try {
@@ -22,6 +25,7 @@ exports.create = async (req, res) => {
       githubId: githubId,
       name: name,
       projectId: req.params.projectId,
+      githubToken: req.body.githubToken,
     };
 
     const data = await Repository.create(repository);
