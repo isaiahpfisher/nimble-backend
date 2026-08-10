@@ -12,9 +12,7 @@ exports.create = async (req, res) => {
 
     // Validate GitHub repository exists
     try {
-      await axios.get(
-        `https://api.github.com/repositories/${githubId}`
-      );
+      await axios.get(`https://api.github.com/repositories/${githubId}`);
     } catch (error) {
       return res.status(400).send({
         message: "Invalid GitHub repository ID.",
@@ -26,12 +24,12 @@ exports.create = async (req, res) => {
       name: name,
       projectId: req.params.projectId,
       githubToken: req.body.githubToken,
+      owner: req.body.owner,
     };
 
     const data = await Repository.create(repository);
 
     res.send(data);
-
   } catch (err) {
     res.status(500).send({
       message: err.message || "Error creating repository.",
