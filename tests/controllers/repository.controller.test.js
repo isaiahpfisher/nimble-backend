@@ -1,3 +1,11 @@
+// crypto.js reads process.env.SECRET_KEY into a Buffer at module load, and this
+// controller pulls it in (directly and via authentication.js) — set one before
+// any require so the suite stands on its own instead of depending on whichever
+// other suite happened to share the Jest worker.
+process.env.SECRET_KEY = Buffer.from("0123456789abcdef0123456789abcdef").toString(
+  "base64",
+);
+
 // Authorization is covered on its own in tests/authentication/authorization.test.js.
 // Here it is stubbed permissively so each controller test sees only the
 // controller's behaviour; the guard calls themselves are asserted per action.
