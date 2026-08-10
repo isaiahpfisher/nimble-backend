@@ -45,6 +45,8 @@ exports.create = async (req, res) => {
       githubId: githubId,
       name: name,
       projectId: req.params.projectId,
+      githubToken: req.body.githubToken,
+      owner: req.body.owner,
     };
 
     const data = await Repository.create(repository);
