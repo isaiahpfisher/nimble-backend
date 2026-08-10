@@ -1,6 +1,7 @@
 const db = require("../models");
 const Story = db.story;
 const Sprint = db.sprint;
+const SystemLog = db.systemLog;
 const { httpError } = require("../utils/httpUtils");
 exports.findAllForProject = async (req, res) => {
   const projectId = req.params.id;
@@ -53,6 +54,18 @@ exports.assignSprint = async (req, res) => {
     }
 
     await story.update({ sprintId: sprint.id });
+    await SystemLog.create({
+      subjectType: "BACKLOG",
+      subjectId: story.id,
+      action: "ASSIGN_STORY_TO_SPRINT",
+      metadata: {
+        message: "Story assigned to sprint",
+        storyTitle: story.title,
+        sprintTitle: sprint.title,
+        projectId: story.projectId,
+      },
+      userId: req.userId,
+    });
 
     res.send({ message: "Story assigned to sprint successfully!" });
   } catch (err) {

@@ -2,6 +2,7 @@ const db = require("../models");
 const User = db.user;
 const Session = db.session;
 const Op = db.Sequelize.Op;
+const SystemLog = db.systemLog;
 const { encrypt, getSalt, hashPassword } = require("../authentication/crypto");
 const { authenticate } = require("../authentication/authentication");
 const { httpError } = require("../utils/httpUtils");
@@ -55,6 +56,18 @@ exports.create = async (req, res) => {
 
     try {
       const createdUser = await User.create(user);
+      await SystemLog.create({
+        subjectType: "USER",
+        subjectId: createdUser.id,
+        action: "CREATE_USER",
+        metadata: {
+          message: "User created",
+          firstName: createdUser.firstName,
+          lastName: createdUser.lastName,
+          email: createdUser.email,
+        },
+        userId: createdUser.id,
+      });
       let userId = createdUser.id;
 
       let expireTime = new Date();
@@ -157,7 +170,7 @@ exports.findByEmail = async (req, res) => {
 
 exports.update = async (req, res) => {
   try {
-    await authenticate(req, res);
+    const { userId } = await authenticate(req, res);
 
     const user = await User.findByPk(req.params.id);
     if (!user) {
@@ -168,6 +181,19 @@ exports.update = async (req, res) => {
     const updatedUser = { firstName, lastName, email, isAdmin };
     await user.update(updatedUser);
 
+    await SystemLog.create({
+      subjectType: "USER",
+      subjectId: user.id,
+      action: "UPDATE_USER",
+      metadata: {
+        message: "User updated",
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        changes: req.body,
+      },
+      userId: userId,
+    });
     res.send(updatedUser);
   } catch (err) {
     res.status(err.statusCode || 500).send({
@@ -179,8 +205,25 @@ exports.update = async (req, res) => {
 // Delete a User with the specified id in the request
 exports.delete = async (req, res) => {
   const id = req.params.id;
-
+  
   try {
+    const { userId } = await authenticate(req, res);
+    const user = await User.findByPk(id);
+
+    if (user) {
+      await SystemLog.create({
+        subjectType: "USER",
+        subjectId: user.id,
+        action: "DELETE_USER",
+        metadata: {
+          message: "User deleted",
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+        },
+        userId: userId,
+      });
+    }
     const number = await User.destroy({
       where: { id: id },
     });
@@ -203,6 +246,16 @@ exports.delete = async (req, res) => {
 // Delete all People from the database.
 exports.deleteAll = async (req, res) => {
   try {
+    const { userId } = await authenticate(req, res);
+    await SystemLog.create({
+      subjectType: "USER",
+      subjectId: 0,
+      action: "DELETE_ALL_USERS",
+      metadata: {
+        message: "All users deleted",
+      },
+      userId: userId,
+    });
     const number = await User.destroy({
       where: {},
       truncate: false,

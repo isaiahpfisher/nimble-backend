@@ -2,6 +2,7 @@ const db = require("../models");
 const Repository = db.repository;
 const Op = db.Sequelize.Op;
 const axios = require("axios");
+const SystemLog = db.systemLog;
 
 exports.create = async (req, res) => {
   try {
@@ -25,6 +26,17 @@ exports.create = async (req, res) => {
     };
 
     const data = await Repository.create(repository);
+    await SystemLog.create({
+      subjectType: "REPOSITORY",
+      subjectId: data.id,
+      action: "CREATE_REPOSITORY",
+      metadata: {
+        message: "Repository connected",
+        repositoryName: data.name,
+        projectId: data.projectId,
+      },
+      userId: req.userId,
+    });
 
     res.send(data);
 
@@ -86,6 +98,17 @@ exports.update = async (req, res) => {
 
     if (updated) {
       const updatedRepository = await Repository.findByPk(id);
+      await SystemLog.create({
+        subjectType: "REPOSITORY",
+        subjectId: updatedRepository.id,
+        action: "UPDATE_REPOSITORY",
+        metadata: {
+          message: "Repository updated",
+          repositoryName: updatedRepository.name,
+          changes: req.body,
+        },
+        userId: req.userId,
+      });
       res.send(updatedRepository);
     } else {
       res.status(404).send({
@@ -101,7 +124,25 @@ exports.update = async (req, res) => {
 exports.delete = async (req, res) => {
   try {
     const id = req.params.id;
+    const repository = await Repository.findByPk(id);
+    if (!repository) {
+      return res.status(404).send({
+        message: "Repository not found",
+      });
+    }
 
+    await SystemLog.create({
+      subjectType: "REPOSITORY",
+      subjectId: repository.id,
+      action: "DELETE_REPOSITORY",
+      metadata: {
+        message: "Repository deleted",
+        repositoryName: repository.name,
+        githubId: repository.githubId,
+        projectId: repository.projectId,
+      },
+      userId: req.userId,
+    });
     const deleted = await Repository.destroy({
       where: { id: id },
     });

@@ -21,6 +21,7 @@ db.user = require("./user.model.js")(sequelize, Sequelize);
 db.session = require("./session.model.js")(sequelize, Sequelize);
 db.activity = require("./activity.model.js")(sequelize, Sequelize);
 db.activityChange = require("./activityChange.model.js")(sequelize, Sequelize);
+db.systemLog = require("./systemLog.model.js")(sequelize, Sequelize);
 db.project = require("./project.model.js")(sequelize, Sequelize);
 db.projectMember = require("./projectMember.model.js")(sequelize, Sequelize);
 db.repository = require("./repository.model.js")(sequelize, Sequelize);
@@ -343,6 +344,19 @@ db.user.hasMany(db.activity, {
   onDelete: "SET NULL",
 });
 db.activity.belongsTo(db.user, {
+  as: "user",
+  foreignKey: { allowNull: true },
+  onDelete: "SET NULL",
+});
+
+// systemLog <-> user
+db.user.hasMany(db.systemLog, {
+  as: "systemLog",
+  foreignKey: { allowNull: true },
+  onDelete: "SET NULL",
+});
+
+db.systemLog.belongsTo(db.user, {
   as: "user",
   foreignKey: { allowNull: true },
   onDelete: "SET NULL",

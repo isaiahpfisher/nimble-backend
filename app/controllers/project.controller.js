@@ -4,6 +4,7 @@ const ProjectMember = db.projectMember;
 const StoryType = db.storyType;
 const StoryState = db.storyState;
 const User = db.user;
+const SystemLog = db.systemLog;
 const { authenticate } = require("../authentication/authentication");
 const Op = db.Sequelize.Op;
 const { httpError } = require("../utils/httpUtils");
@@ -139,6 +140,16 @@ exports.create = async (req, res) => {
     await data.update({
       completedStateId: states[states.length - 1].id,
     });
+    await SystemLog.create({
+      subjectType: "PROJECT",
+      subjectId: data.id,
+      action: "CREATE_PROJECT",
+      metadata: {
+        message: "Project created",
+        projectName: data.title,
+      }, 
+      userId: userId,
+    });
 
     res.send(data);
   } catch (err) {
@@ -199,7 +210,16 @@ exports.adminCreate = async (req, res) => {
     await data.update({
       completedStateId: states[states.length - 1].id,
     });
-
+    await SystemLog.create({
+      subjectType: "PROJECT",
+      subjectId: data.id,
+      action: "CREATE_PROJECT",
+      metadata: {
+        message: "Project created by admin",
+        projectName: data.title,
+      },
+      userId: manager.id,
+    });
     res.send(data);
   } catch (err) {
     res.status(err.statusCode || 500).send({
@@ -210,7 +230,7 @@ exports.adminCreate = async (req, res) => {
 
 exports.update = async (req, res) => {
   try {
-    await authenticate(req, res);
+    const { userId } = await authenticate(req, res);
 
     const project = await Project.findByPk(req.params.id);
     if (!project) {
@@ -251,6 +271,17 @@ exports.update = async (req, res) => {
       completedStateId,
     });
 
+    await SystemLog.create({
+      subjectType: "PROJECT",
+      subjectId: project.id,
+      action: "UPDATE_PROJECT",
+      metadata: {
+        message: "Project updated",
+        projectName: project.title,
+        changes: req.body,
+      },
+      userId: userId,
+    });
     res.send(project);
   } catch (err) {
     res.status(err.statusCode || 500).send({
@@ -261,13 +292,23 @@ exports.update = async (req, res) => {
 
 exports.delete = async (req, res) => {
   try {
-    await authenticate(req, res);
+    const { userId } = await authenticate(req, res);
 
     const project = await Project.findByPk(req.params.id);
     if (!project) {
       throw httpError(`Cannot find Project with id = ${req.params.id}.`, 404);
     }
 
+    await SystemLog.create({
+      subjectType: "PROJECT",
+      subjectId: project.id,
+      action: "DELETE_PROJECT",
+      metadata: {
+        message: "Project deleted",
+        projectName: project.title,
+      },
+      userId: userId,
+    });
     await project.destroy();
     res.send({ message: "Project deleted successfully!" });
   } catch (err) {

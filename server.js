@@ -52,6 +52,7 @@ require("./app/routes/relation.routes")(app);
 require("./app/routes/acceptanceCriteria.routes")(app);
 require("./app/routes/comment.routes")(app);
 require("./app/routes/activity.routes")(app);
+require("./app/routes/systemLog.routes.js")(app);
 require("./app/routes/github.routes.js")(app);
 require("./app/routes/backlog.routes.js")(app);
 

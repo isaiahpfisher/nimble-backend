@@ -1,5 +1,6 @@
 const db = require("../models");
 const Sprint = db.sprint;
+const SystemLog = db.systemLog;
 const { authenticate } = require("../authentication/authentication");
 const { httpError } = require("../utils/httpUtils");
 
@@ -32,7 +33,7 @@ exports.findAll = async (req, res) => {
 
 exports.create = async (req, res) => {
   try {
-    await authenticate(req, res);
+    const { userId } = await authenticate(req, res);
 
     if (
       req.body.title === undefined ||
@@ -55,6 +56,17 @@ exports.create = async (req, res) => {
 
     const data = await Sprint.create(sprint);
 
+    await SystemLog.create({
+      subjectType: "SPRINT",
+      subjectId: data.id,
+      action: "CREATE_SPRINT",
+      metadata: {
+        message: "Sprint created",
+        sprintTitle: data.title,
+        projectId: data.projectId,
+      },
+      userId,
+    });
     res.send(data);
   } catch (err) {
     res.status(err.statusCode || 500).send({
@@ -110,6 +122,22 @@ exports.createRecurring = async (req, res) => {
     }
 
     const data = await Sprint.bulkCreate(sprints);
+    const { userId } = await authenticate(req, res);
+
+    await SystemLog.create({
+      subjectType: "SPRINT",
+      subjectId: data[0].id,
+      action: "CREATE_RECURRING_SPRINT",
+      metadata: {
+        message: "Recurring sprints created",
+        sprintTitle: req.body.title,
+        recurrencePattern: req.body.recurrencePattern,
+        recurrenceCount: req.body.recurrenceCount,
+        projectId: req.body.projectId,
+        createdSprintIds: data.map((sprint) => sprint.id),
+      },
+      userId,
+    });
 
     res.send(data);
   } catch (err) {
@@ -180,6 +208,19 @@ exports.update = async (req, res) => {
     }
 
     await sprint.update(req.body);
+    const { userId } = await authenticate(req, res);
+
+    await SystemLog.create({
+      subjectType: "SPRINT",
+      subjectId: sprint.id,
+      action: "UPDATE_SPRINT",
+      metadata: {
+        message: "Sprint updated",
+        sprintTitle: sprint.title,
+        changes: req.body,
+      },
+      userId,
+    });
 
     res.send(sprint);
   } catch (err) {
@@ -198,6 +239,20 @@ exports.delete = async (req, res) => {
     if (!sprint) {
       throw httpError(`Cannot find Sprint with id = ${req.params.id}.`, 404);
     }
+    const { userId } = await authenticate(req, res);
+
+    await SystemLog.create({
+      subjectType: "SPRINT",
+      subjectId: sprint.id,
+      action: "DELETE_SPRINT",
+      metadata: {
+        message: "Sprint deleted",
+        sprintTitle: sprint.title,
+        projectId: sprint.projectId,
+      },
+      userId,
+    });
+
 
     await sprint.destroy();
 
