@@ -32,6 +32,9 @@ jest.mock("../../app/models", () => ({
   session: {
     create: jest.fn(),
   },
+  systemLog: {
+    create: jest.fn(),
+  },
   Sequelize: { Op: { like: Symbol("like") } },
 }));
 

@@ -29,6 +29,9 @@ jest.mock("../../app/models", () => ({
   projectMember: {
     create: jest.fn(),
   },
+  systemLog: {
+    create: jest.fn(),
+  },
   // Sentinels for the associations findOne eager-loads; the controller only
   // passes these through to Sequelize, so identity is all the tests need.
   // `user` also needs a real finder for adminCreate's manager lookup.

@@ -3,6 +3,7 @@ const ProjectMember = db.projectMember;
 const Op = db.Sequelize.Op;
 const User = db.user;
 const Project = db.project;
+const SystemLog = db.systemLog;
 const { authenticate } = require("../authentication/authentication");
 const {
   requireAdmin,
@@ -42,6 +43,18 @@ exports.create = async (req, res) => {
     };
 
     const data = await ProjectMember.create(projectMember);
+    await SystemLog.create({
+      subjectType: "PROJECT_MEMBER",
+      subjectId: data.id,
+      action: "ADD_PROJECT_MEMBER",
+      metadata: {
+        message: "Project member added",
+        projectId: data.projectId,
+        memberUserId: data.userId,
+        isManager: data.isManager,
+      },
+      userId,
+    });
 
     res.send(data);
   } catch (err) {
@@ -119,6 +132,18 @@ exports.update = async (req, res) => {
 
     const { isManager } = req.body;
     await projectMember.update({ isManager });
+    await SystemLog.create({
+      subjectType: "PROJECT_MEMBER",
+      subjectId: projectMember.id,
+      action: "UPDATE_PROJECT_MEMBER",
+      metadata: {
+        message: "Project member updated",
+        projectId: projectMember.projectId,
+        memberUserId: projectMember.userId,
+        isManager: projectMember.isManager,
+      },
+      userId,
+    });
 
     res.send(projectMember);
   } catch (err) {
@@ -136,6 +161,18 @@ exports.delete = async (req, res) => {
     if (!projectMember) {
       throw httpError(`Cannot find ProjectMember with id = ${req.params.id}.`, 404);
     }
+    await SystemLog.create({
+      subjectType: "PROJECT_MEMBER",
+      subjectId: projectMember.id,
+      action: "REMOVE_PROJECT_MEMBER",
+      metadata: {
+        message: "Project member removed",
+        projectId: projectMember.projectId,
+        memberUserId: projectMember.userId,
+        isManager: projectMember.isManager,
+      },
+      userId,
+    });
 
     await requireMemberManagement(userId, projectMember.projectId);
 

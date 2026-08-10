@@ -1,6 +1,7 @@
 const db = require("../models");
 const User = db.user;
 const Session = db.session;
+const SystemLog = db.systemLog;
 const { encrypt } = require("../authentication/crypto");
 
 exports.githubLogin = async (req, res) => {
@@ -31,10 +32,23 @@ exports.githubLogin = async (req, res) => {
       headers: { Authorization: `token ${tokenData.access_token}` },
     });
     const githubUser = await profileRes.json();
-
     if (!githubUser || !githubUser.id) {
       return res.status(403).send({ message: "Unable to verify GitHub account." });
     }
+    const emailRes = await fetch("https://api.github.com/user/emails", {
+      headers: {
+        Authorization: `token ${tokenData.access_token}`,
+        Accept: "application/json",
+      },
+    });
+
+    const emails = await emailRes.json();
+
+    const primaryEmail = emails.find(
+      (email) => email.primary && email.verified
+    )?.email;
+
+    
     const [firstName, ...rest] = (githubUser.name || githubUser.login).split(" ");
     const lastName = rest.join(" ") || "-";
 
@@ -44,7 +58,7 @@ exports.githubLogin = async (req, res) => {
         githubId: String(githubUser.id),
         firstName,
         lastName,
-        email: githubUser.email,
+        email: primaryEmail,
         avatarUrl: githubUser.avatar_url,
       },
     });
@@ -59,6 +73,16 @@ exports.githubLogin = async (req, res) => {
       expirationDate: expireTime,
     };
     const data = await Session.create(session);
+    await SystemLog.create({
+      subjectType: "USER",
+      subjectId: user.id,
+      action: "GITHUB_LOGIN",
+      metadata: {
+        message: "User logged in with GitHub",
+        email: user.email,
+      },
+      userId: user.id,
+    });
     let sessionId = data.id;
     let token = await encrypt(sessionId);
 
@@ -72,7 +96,7 @@ exports.githubLogin = async (req, res) => {
     };
     res.send(userInfo);
   } catch (err) {
-    console.error(err);
+    console.error("GITHUB LOGIN ERROR:", err);
     res.status(500).send({
       message: err.message || "Some error occurred during GitHub authentication.",
     });

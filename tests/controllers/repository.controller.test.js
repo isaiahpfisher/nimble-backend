@@ -1,3 +1,11 @@
+// crypto.js reads process.env.SECRET_KEY into a Buffer at module load, and this
+// controller pulls it in (directly and via authentication.js) — set one before
+// any require so the suite stands on its own instead of depending on whichever
+// other suite happened to share the Jest worker.
+process.env.SECRET_KEY = Buffer.from("0123456789abcdef0123456789abcdef").toString(
+  "base64",
+);
+
 // Authorization is covered on its own in tests/authentication/authorization.test.js.
 // Here it is stubbed permissively so each controller test sees only the
 // controller's behaviour; the guard calls themselves are asserted per action.
@@ -28,6 +36,9 @@ jest.mock("../../app/models", () => ({
     findByPk: jest.fn(),
     update: jest.fn(),
     destroy: jest.fn(),
+  },
+  systemLog: {
+    create: jest.fn(),
   },
   Sequelize: { Op: {} },
 }));
@@ -293,87 +304,108 @@ describe("findAllForProject", () => {
 
 
 describe("findOne", () => {
-
   it("returns a repository", async () => {
-
     const repository = {
-      id:1,
+      id: 1,
+      projectId: 5,
     };
-
 
     Repository.findByPk.mockResolvedValue(repository);
 
-
     const req = {
-      params:{
-        id:"1",
+      userId: 42,
+      params: {
+        id: "1",
       },
     };
-
 
     const res = mockRes();
 
+    await controller.findOne(req, res);
 
-    await controller.findOne(req,res);
+    expect(Repository.findByPk).toHaveBeenCalledWith("1");
 
-
-    expect(res.send)
-      .toHaveBeenCalledWith(repository);
-
+    expect(res.send).toHaveBeenCalledWith(repository);
   });
 
-
-
   it("returns 404 when repository does not exist", async () => {
-
     Repository.findByPk.mockResolvedValue(null);
 
-
-    const req={
-      params:{
-        id:"1",
+    const req = {
+      userId: 42,
+      params: {
+        id: "1",
       },
     };
 
+    const res = mockRes();
 
-    const res=mockRes();
+    await controller.findOne(req, res);
 
+    expect(res.status).toHaveBeenCalledWith(404);
 
-    await controller.findOne(req,res);
-
-
-    expect(res.status)
-      .toHaveBeenCalledWith(404);
-
+    expect(res.send).toHaveBeenCalledWith({
+      message: "Repository not found",
+    });
   });
 
-
-
   it("returns 500 when findOne fails", async () => {
-
     Repository.findByPk.mockRejectedValue(
       new Error("find one failed")
     );
 
-
-    const req={
-      params:{
-        id:"1",
+    const req = {
+      userId: 42,
+      params: {
+        id: "1",
       },
     };
 
+    const res = mockRes();
 
-    const res=mockRes();
+    await controller.findOne(req, res);
 
+    expect(res.status).toHaveBeenCalledWith(500);
 
-    await controller.findOne(req,res);
-
-
-    expect(res.status)
-      .toHaveBeenCalledWith(500);
-
+    expect(res.send).toHaveBeenCalledWith({
+      message: "find one failed",
+    });
   });
 
+  it("returns 500 when project membership check fails", async () => {
+    const repository = {
+      id: 1,
+      projectId: 5,
+    };
+
+    Repository.findByPk.mockResolvedValue(repository);
+
+    const authorizationError = new Error("authorization failed");
+    authorizationError.statusCode = 500;
+
+    const authorization = require("../../app/authentication/authorization");
+
+    authorization.requireProjectMember.mockRejectedValueOnce(
+      authorizationError
+    );
+
+    const req = {
+      userId: 42,
+      params: {
+        id: "1",
+      },
+    };
+
+    const res = mockRes();
+
+    await controller.findOne(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+
+    expect(res.send).toHaveBeenCalledWith({
+      message: "authorization failed",
+    });
+  });
 });
 
 

@@ -2,6 +2,8 @@ const db = require("../models");
 const Repository = db.repository;
 const Op = db.Sequelize.Op;
 const axios = require("axios");
+
+const SystemLog = db.systemLog;
 const { httpError } = require("../utils/httpUtils");
 const { requireAdmin, requireProjectMember } = require("../authentication/authorization");
 
@@ -43,9 +45,22 @@ exports.create = async (req, res) => {
       githubId: githubId,
       name: name,
       projectId: req.params.projectId,
+      githubToken: req.body.githubToken,
+      owner: req.body.owner,
     };
 
     const data = await Repository.create(repository);
+    await SystemLog.create({
+      subjectType: "REPOSITORY",
+      subjectId: data.id,
+      action: "CREATE_REPOSITORY",
+      metadata: {
+        message: "Repository connected",
+        repositoryName: data.name,
+        projectId: data.projectId,
+      },
+      userId: req.userId,
+    });
 
     res.send(data);
   } catch (err) {
@@ -102,6 +117,18 @@ exports.update = async (req, res) => {
     const { projectId, ...updates } = req.body;
     await repository.update(updates);
 
+    await SystemLog.create({
+      subjectType: "REPOSITORY",
+      subjectId: repository.id,
+      action: "UPDATE_REPOSITORY",
+      metadata: {
+        message: "Repository updated",
+        repositoryName: repository.name,
+        changes: updates,
+      },
+      userId: req.userId,
+    });
+
     res.send(repository);
   } catch (err) {
     res.status(err.statusCode || 500).send({
@@ -112,6 +139,19 @@ exports.update = async (req, res) => {
 exports.delete = async (req, res) => {
   try {
     const repository = await findRepositoryForCaller(req.userId, req.params.id);
+
+    await SystemLog.create({
+      subjectType: "REPOSITORY",
+      subjectId: repository.id,
+      action: "DELETE_REPOSITORY",
+      metadata: {
+        message: "Repository deleted",
+        repositoryName: repository.name,
+        githubId: repository.githubId,
+        projectId: repository.projectId,
+      },
+      userId: req.userId,
+    });
 
     await repository.destroy();
 
