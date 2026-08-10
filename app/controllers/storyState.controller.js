@@ -3,13 +3,16 @@ const StoryState = db.storyState;
 const Story = db.story;
 const Op = db.Sequelize.Op;
 const { httpError } = require("../utils/httpUtils");
+const { requireAdmin, requireProjectMember } = require("../authentication/authorization");
 
 exports.findAll = async (req, res) => {
   try {
+    await requireAdmin(req.userId);
+
     const data = await StoryState.findAll({ order: [["order", "ASC"]] });
     res.send(data);
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Something went wrong",
     });
   }
@@ -18,6 +21,8 @@ exports.findAll = async (req, res) => {
 exports.findAllForProject = async (req, res) => {
   const { projectId } = req.params;
   try {
+    await requireProjectMember(req.userId, projectId);
+
     const data = await StoryState.findAll({
       where: { projectId },
       order: [["order", "ASC"]],
@@ -25,7 +30,7 @@ exports.findAllForProject = async (req, res) => {
 
     res.send(data);
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Something went wrong",
     });
   }
@@ -35,6 +40,8 @@ exports.create = async (req, res) => {
   const { projectId } = req.params;
 
   try {
+    await requireProjectMember(req.userId, projectId);
+
     if (!req.body.name || !req.body.order) {
       throw httpError("Missing required fields.", 400);
     }
@@ -65,6 +72,8 @@ exports.update = async (req, res) => {
   const { projectId, stateId } = req.params;
 
   try {
+    await requireProjectMember(req.userId, projectId);
+
     if (!req.body.name) {
       throw httpError("Missing required fields.", 400);
     }
@@ -100,9 +109,28 @@ exports.reorder = async (req, res) => {
   const states = req.body.states;
 
   try {
-    await StoryState.bulkCreate(states, {
-      updateOnDuplicate: ["name", "order"],
+    await requireProjectMember(req.userId, projectId);
+
+    if (!states || states.length < 1) {
+      throw httpError("Missing required fields.", 400);
+    }
+
+    // make sure all the states belong to this project
+    const owned = await StoryState.findAll({
+      where: { id: states.map((s) => s.id), projectId },
+      attributes: ["id"],
     });
+
+    if (owned.length != states.length) {
+      throw httpError("At least one state does not belong to this project.", 400);
+    }
+
+    await StoryState.bulkCreate(
+      states.map((s) => ({ ...s, projectId })),
+      {
+        updateOnDuplicate: ["name", "order"],
+      },
+    );
 
     res.status(200).send({
       message: "Successfully reordered states.",
@@ -119,6 +147,8 @@ exports.delete = async (req, res) => {
   const fallbackStateId = req.body.fallbackStateId;
 
   try {
+    await requireProjectMember(req.userId, projectId);
+
     if (!fallbackStateId) {
       throw httpError("Missing required fields.", 400);
     }
@@ -129,6 +159,15 @@ exports.delete = async (req, res) => {
 
     if (!state) {
       throw httpError(`Cannot find StoryState with id = ${stateId}.`, 404);
+    }
+
+    // make sure the fallback state belongs to this project
+    const fallback = await StoryState.findOne({
+      where: { id: fallbackStateId, projectId },
+    });
+
+    if (!fallback) {
+      throw httpError(`Cannot find StoryState with id = ${fallbackStateId}.`, 404);
     }
 
     await Story.update({ stateId: fallbackStateId }, { where: { stateId } });

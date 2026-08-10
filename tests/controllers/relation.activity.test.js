@@ -1,9 +1,29 @@
+// Authorization is covered on its own in tests/authentication/authorization.test.js.
+// Here it is stubbed permissively so each controller test sees only the
+// controller's behaviour; the guard calls themselves are asserted per action.
+jest.mock("../../app/authentication/authorization", () => ({
+  isAdmin: jest.fn().mockResolvedValue(true),
+  requireAdmin: jest.fn().mockResolvedValue(undefined),
+  requireSelfOrAdmin: jest.fn().mockResolvedValue(undefined),
+  requireProjectMember: jest.fn().mockResolvedValue({ isManager: "1" }),
+  requireMemberManagement: jest.fn().mockResolvedValue({ isManager: "1" }),
+  assertBelongsToProject: jest.fn((record, projectId, label) => {
+    const owner = record && record.projectId;
+    if (owner == null || projectId == null || String(owner) !== String(projectId)) {
+      const error = new Error(`Cannot find ${label}.`);
+      error.statusCode = 404;
+      throw error;
+    }
+    return record;
+  }),
+}));
+
 // Activity-history coverage for the relation controller. A relation touches
 // two stories, so each mutation has to land on both stories' feeds with the
 // direction flipped.
 jest.mock("../../app/models", () => ({
   relation: { findAll: jest.fn(), findOne: jest.fn(), create: jest.fn() },
-  story: { findAll: jest.fn(), findByPk: jest.fn() },
+  story: { findAll: jest.fn(), findOne: jest.fn(), findByPk: jest.fn() },
   user: { findByPk: jest.fn() },
   Sequelize: { Op: { in: "in", or: "or" } },
 }));
@@ -46,6 +66,9 @@ beforeEach(() => {
   authenticate = jest.fn().mockResolvedValue({ userId: 42 });
   global.authenticate = authenticate;
   User.findByPk.mockResolvedValue({ id: 42, firstName: "Ada", lastName: "Lovelace" });
+  // delete scopes the anchor story to the project; default to a story that
+  // does belong to the project in the URL.
+  Story.findOne.mockResolvedValue({ id: 3, projectId: "1" });
   Story.findByPk.mockImplementation((id) =>
     Promise.resolve(Number(id) === 3 ? STORY_ONE : Number(id) === 4 ? STORY_TWO : null),
   );
@@ -179,7 +202,7 @@ describe("delete", () => {
 
   it("writes an outgoing entry on the first story's feed", async () => {
     arrangeRelation();
-    const req = { params: { storyId: "3", relationId: "11" } };
+    const req = { params: { projectId: "1", storyId: "3", relationId: "11" } };
     const res = mockRes();
 
     await controller.delete(req, res);
@@ -203,7 +226,7 @@ describe("delete", () => {
 
   it("writes a mirrored incoming entry on the second story's feed", async () => {
     arrangeRelation();
-    const req = { params: { storyId: "3", relationId: "11" } };
+    const req = { params: { projectId: "1", storyId: "3", relationId: "11" } };
 
     await controller.delete(req, mockRes());
 
@@ -226,7 +249,7 @@ describe("delete", () => {
 
   it("carries the deleted relation's type into the metadata", async () => {
     arrangeRelation().type = "DUPLICATES";
-    const req = { params: { storyId: "3", relationId: "11" } };
+    const req = { params: { projectId: "1", storyId: "3", relationId: "11" } };
 
     await controller.delete(req, mockRes());
 
@@ -238,7 +261,7 @@ describe("delete", () => {
 
   it("records both entries before the relation row is destroyed", async () => {
     const relation = arrangeRelation();
-    const req = { params: { storyId: "3", relationId: "11" } };
+    const req = { params: { projectId: "1", storyId: "3", relationId: "11" } };
 
     await controller.delete(req, mockRes());
 
@@ -254,7 +277,7 @@ describe("delete", () => {
     Relation.findOne.mockResolvedValue(null);
     const res = mockRes();
 
-    await controller.delete({ params: { storyId: "3", relationId: "99" } }, res);
+    await controller.delete({ params: { projectId: "1", storyId: "3", relationId: "99" } }, res);
 
     expect(recordActivity).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(404);

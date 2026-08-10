@@ -3,7 +3,7 @@ module.exports = (app) => {
   const { authenticateRoute } = require("../authentication/authentication");
   var router = require("express").Router();
 
-  router.get("/comments/", Comment.findAll);
+  router.get("/comments/", authenticateRoute, Comment.findAll);
 
   router.get(
     "/projects/:projectId/stories/:storyId/comments",

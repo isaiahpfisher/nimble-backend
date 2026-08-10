@@ -1,3 +1,23 @@
+// Authorization is covered on its own in tests/authentication/authorization.test.js.
+// Here it is stubbed permissively so each controller test sees only the
+// controller's behaviour; the guard calls themselves are asserted per action.
+jest.mock("../../app/authentication/authorization", () => ({
+  isAdmin: jest.fn().mockResolvedValue(true),
+  requireAdmin: jest.fn().mockResolvedValue(undefined),
+  requireSelfOrAdmin: jest.fn().mockResolvedValue(undefined),
+  requireProjectMember: jest.fn().mockResolvedValue({ isManager: "1" }),
+  requireMemberManagement: jest.fn().mockResolvedValue({ isManager: "1" }),
+  assertBelongsToProject: jest.fn((record, projectId, label) => {
+    const owner = record && record.projectId;
+    if (owner == null || projectId == null || String(owner) !== String(projectId)) {
+      const error = new Error(`Cannot find ${label}.`);
+      error.statusCode = 404;
+      throw error;
+    }
+    return record;
+  }),
+}));
+
 const { DataTypes } = require("sequelize");
 const express = require("express");
 const request = require("supertest");
@@ -8,6 +28,9 @@ jest.mock("../../app/models", () => ({
     create: jest.fn(),
     bulkCreate: jest.fn(),
     findByPk: jest.fn(),
+  },
+  systemLog: {
+    create: jest.fn(),
   },
   // Sentinels for the associations findOne eager-loads; the controller only
   // passes these through to Sequelize, so identity is all the tests need.
@@ -37,7 +60,7 @@ function mockRes() {
 describe("Sprint controller", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    authenticate.mockResolvedValue(undefined);
+    authenticate.mockResolvedValue({ userId: 42 });
   });
 
   describe("findAll", () => {

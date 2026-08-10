@@ -1,3 +1,23 @@
+// Authorization is covered on its own in tests/authentication/authorization.test.js.
+// Here it is stubbed permissively so each controller test sees only the
+// controller's behaviour; the guard calls themselves are asserted per action.
+jest.mock("../../app/authentication/authorization", () => ({
+  isAdmin: jest.fn().mockResolvedValue(true),
+  requireAdmin: jest.fn().mockResolvedValue(undefined),
+  requireSelfOrAdmin: jest.fn().mockResolvedValue(undefined),
+  requireProjectMember: jest.fn().mockResolvedValue({ isManager: "1" }),
+  requireMemberManagement: jest.fn().mockResolvedValue({ isManager: "1" }),
+  assertBelongsToProject: jest.fn((record, projectId, label) => {
+    const owner = record && record.projectId;
+    if (owner == null || projectId == null || String(owner) !== String(projectId)) {
+      const error = new Error(`Cannot find ${label}.`);
+      error.statusCode = 404;
+      throw error;
+    }
+    return record;
+  }),
+}));
+
 // Mock the models module so requiring the controller never opens a real DB
 // connection (app/models/index.js instantiates Sequelize at load time).
 jest.mock("../../app/models", () => ({
@@ -8,6 +28,8 @@ jest.mock("../../app/models", () => ({
   },
   story: {
     findAll: jest.fn(),
+    // delete scopes the anchor story to the project before touching the relation
+    findOne: jest.fn(),
     // both mutations re-read the two sides to label them in the history
     findByPk: jest.fn(),
   },
@@ -57,6 +79,9 @@ beforeEach(() => {
   authenticate = jest.fn().mockResolvedValue({ userId: 42 });
   global.authenticate = authenticate;
   User.findByPk.mockResolvedValue({ id: 42, firstName: "Ada", lastName: "Lovelace" });
+  // delete scopes the anchor story to the project; default to a story that
+  // does belong to the project in the URL.
+  Story.findOne.mockResolvedValue({ id: 3, projectId: "1" });
   Story.findByPk.mockImplementation((id) => Promise.resolve({ id: Number(id), title: `Story ${id}` }));
 });
 
@@ -245,7 +270,7 @@ describe("delete", () => {
   it("destroys the relation", async () => {
     const relation = { id: 11, destroy: jest.fn().mockResolvedValue(undefined) };
     Relation.findOne.mockResolvedValue(relation);
-    const req = { params: { storyId: "3", relationId: "11" } };
+    const req = { params: { projectId: "1", storyId: "3", relationId: "11" } };
     const res = mockRes();
 
     await controller.delete(req, res);
@@ -262,7 +287,7 @@ describe("delete", () => {
 
   it("responds 404 when the relation is missing", async () => {
     Relation.findOne.mockResolvedValue(null);
-    const req = { params: { storyId: "3", relationId: "99" } };
+    const req = { params: { projectId: "1", storyId: "3", relationId: "99" } };
     const res = mockRes();
 
     await controller.delete(req, res);
@@ -278,7 +303,7 @@ describe("delete", () => {
       id: 11,
       destroy: jest.fn().mockRejectedValue(new Error("locked")),
     });
-    const req = { params: { storyId: "3", relationId: "11" } };
+    const req = { params: { projectId: "1", storyId: "3", relationId: "11" } };
     const res = mockRes();
 
     await controller.delete(req, res);

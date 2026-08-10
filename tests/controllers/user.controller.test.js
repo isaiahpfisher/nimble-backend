@@ -1,3 +1,23 @@
+// Authorization is covered on its own in tests/authentication/authorization.test.js.
+// Here it is stubbed permissively so each controller test sees only the
+// controller's behaviour; the guard calls themselves are asserted per action.
+jest.mock("../../app/authentication/authorization", () => ({
+  isAdmin: jest.fn().mockResolvedValue(true),
+  requireAdmin: jest.fn().mockResolvedValue(undefined),
+  requireSelfOrAdmin: jest.fn().mockResolvedValue(undefined),
+  requireProjectMember: jest.fn().mockResolvedValue({ isManager: "1" }),
+  requireMemberManagement: jest.fn().mockResolvedValue({ isManager: "1" }),
+  assertBelongsToProject: jest.fn((record, projectId, label) => {
+    const owner = record && record.projectId;
+    if (owner == null || projectId == null || String(owner) !== String(projectId)) {
+      const error = new Error(`Cannot find ${label}.`);
+      error.statusCode = 404;
+      throw error;
+    }
+    return record;
+  }),
+}));
+
 // Mock the models module so requiring the controller never opens a real DB
 // connection (app/models/index.js instantiates Sequelize at load time).
 jest.mock("../../app/models", () => ({
@@ -10,6 +30,9 @@ jest.mock("../../app/models", () => ({
     destroy: jest.fn(),
   },
   session: {
+    create: jest.fn(),
+  },
+  systemLog: {
     create: jest.fn(),
   },
   Sequelize: { Op: { like: Symbol("like") } },
@@ -153,7 +176,7 @@ describe("findAll", () => {
   it("returns all users when no id filter is given", async () => {
     const users = [{ id: 1 }, { id: 2 }];
     User.findAll.mockResolvedValue(users);
-    const req = { query: {} };
+    const req = { userId: 42, query: {} };
     const res = mockRes();
 
     await controller.findAll(req, res);
@@ -167,7 +190,7 @@ describe("findAll", () => {
 
   it("builds a like condition when an id filter is given", async () => {
     User.findAll.mockResolvedValue([]);
-    const req = { query: { id: "5" } };
+    const req = { userId: 42, query: { id: "5" } };
     const res = mockRes();
 
     await controller.findAll(req, res);
@@ -178,7 +201,7 @@ describe("findAll", () => {
 
   it("responds 500 on failure", async () => {
     User.findAll.mockRejectedValue(new Error("db down"));
-    const req = { query: {} };
+    const req = { userId: 42, query: {} };
     const res = mockRes();
 
     await controller.findAll(req, res);
@@ -194,7 +217,7 @@ describe("findOne", () => {
     User.findByPk.mockResolvedValue(user);
     const res = mockRes();
 
-    await controller.findOne({ params: { id: "7" } }, res);
+    await controller.findOne({ userId: 42, params: { id: "7" } }, res);
 
     expect(res.send).toHaveBeenCalledWith(user);
   });
@@ -203,7 +226,7 @@ describe("findOne", () => {
     User.findByPk.mockResolvedValue(null);
     const res = mockRes();
 
-    await controller.findOne({ params: { id: "99" } }, res);
+    await controller.findOne({ userId: 42, params: { id: "99" } }, res);
 
     expect(res.status).toHaveBeenCalledWith(404);
     expect(res.send).toHaveBeenCalledWith({
@@ -215,7 +238,7 @@ describe("findOne", () => {
     User.findByPk.mockRejectedValue(new Error("boom"));
     const res = mockRes();
 
-    await controller.findOne({ params: { id: "1" } }, res);
+    await controller.findOne({ userId: 42, params: { id: "1" } }, res);
 
     expect(res.status).toHaveBeenCalledWith(500);
     expect(res.send).toHaveBeenCalledWith({ message: "boom" });

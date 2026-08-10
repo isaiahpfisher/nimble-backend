@@ -7,10 +7,12 @@
     "test": "jest",
     "test:coverage": "jest --coverage",
     "start": "node server.js",
+    "mcp": "node mcp/server.mjs",
+    "mcp:inspect": "npx @modelcontextprotocol/inspector node mcp/server.mjs -e NIMBLE_TOKEN=$NIMBLE_TOKEN -e NIMBLE_USER_ID=$NIMBLE_USER_ID",
     "init-db": "node scripts/init-db.js",
     "init-db:wipe": "node scripts/init-db.js --wipe",
     "init-db:keep": "node scripts/init-db.js --no-wipe",
-    "bundle": "mkdir deploy && cp -r app server.js package.json package-lock.json nimble-backend.service .env deploy"
+    "bundle": "mkdir deploy && cp -r app mcp server.js package.json package-lock.json nimble-backend.service .env deploy"
   },
   "jest": {
     "testEnvironment": "node",
@@ -33,9 +35,11 @@
   "author": "cs",
   "license": "ISC",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "auth-verify": "^1.14.1",
     "axios": "^1.19.0",
     "bcryptjs": "^2.4.3",
+    "cohere-ai": "^8.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.0.0",
     "express": "^4.22.2",
@@ -49,6 +53,7 @@
     "pg-hstore": "^2.3.4",
     "resend": "^6.17.2",
     "sequelize": "^6.19.0",
-    "supertest": "^6.3.3"
+    "supertest": "^6.3.3",
+    "zod": "^4.4.3"
   }
 }

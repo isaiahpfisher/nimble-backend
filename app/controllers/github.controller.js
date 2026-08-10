@@ -32,6 +32,9 @@ exports.githubLogin = async (req, res) => {
       headers: { Authorization: `token ${tokenData.access_token}` },
     });
     const githubUser = await profileRes.json();
+    if (!githubUser || !githubUser.id) {
+      return res.status(403).send({ message: "Unable to verify GitHub account." });
+    }
     const emailRes = await fetch("https://api.github.com/user/emails", {
       headers: {
         Authorization: `token ${tokenData.access_token}`,
@@ -45,9 +48,7 @@ exports.githubLogin = async (req, res) => {
       (email) => email.primary && email.verified
     )?.email;
 
-    if (!githubUser || !githubUser.id) {
-      return res.status(403).send({ message: "Unable to verify GitHub account." });
-    }
+    
     const [firstName, ...rest] = (githubUser.name || githubUser.login).split(" ");
     const lastName = rest.join(" ") || "-";
 
@@ -95,7 +96,7 @@ exports.githubLogin = async (req, res) => {
     };
     res.send(userInfo);
   } catch (err) {
-    console.error(err);
+    console.error("GITHUB LOGIN ERROR:", err);
     res.status(500).send({
       message: err.message || "Some error occurred during GitHub authentication.",
     });

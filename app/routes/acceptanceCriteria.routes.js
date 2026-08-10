@@ -4,7 +4,11 @@ module.exports = (app) => {
   var router = require("express").Router();
 
   // Retrieve all AcceptanceCriteria
-  router.get("/acceptanceCriteria/", AcceptanceCriteria.findAll);
+  router.get(
+    "/acceptanceCriteria/",
+    authenticateRoute,
+    AcceptanceCriteria.findAll,
+  );
 
   router.post(
     "/projects/:projectId/stories/:storyId/acceptanceCriteria",
