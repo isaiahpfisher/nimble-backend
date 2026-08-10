@@ -1,14 +1,38 @@
 module.exports = (sequelize, Sequelize) => {
-  const Retrospective = sequelize.define("retrospective", {
-    agenda: {
-      type: Sequelize.STRING,
-      allowNull: true,
+  const Retrospective = sequelize.define(
+    "retrospective",
+    {
+      title: {
+        type: Sequelize.STRING,
+        allowNull: true,
+        defaultValue: "Sprint Retrospective",
+      },
+
+      agenda: {
+        type: Sequelize.TEXT,
+        allowNull: true,
+      },
+
+      summary: {
+        type: Sequelize.TEXT,
+        allowNull: false,
+        defaultValue: "",
+      },
+
+      sprintId: {
+        type: Sequelize.INTEGER,
+        allowNull: false,
+      },
+
+      createdById: {
+        type: Sequelize.INTEGER,
+        allowNull: true,
+      },
     },
-    summary: {
-      type: Sequelize.STRING,
-      allowNull: false,
-    },
-  });
+    {
+      tableName: "retrospectives",
+    }
+  );
 
   return Retrospective;
 };
