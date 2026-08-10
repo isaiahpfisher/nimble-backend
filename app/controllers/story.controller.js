@@ -8,6 +8,7 @@ const Sprint = db.sprint;
 const AcceptanceCriteria = db.acceptanceCriteria;
 const Op = db.Sequelize.Op;
 const { httpError } = require("../utils/httpUtils");
+const { requireAdmin, requireProjectMember, assertBelongsToProject } = require("../authentication/authorization");
 const {
   recordActivity,
   ACTIVITY_ACTION,
@@ -32,10 +33,12 @@ const UPDATABLE_STORY_FIELDS = [
 
 exports.findAll = async (req, res) => {
   try {
+    await requireAdmin(req.userId);
+
     const data = await Story.findAll();
     res.send(data);
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Something went wrong",
     });
   }
@@ -45,6 +48,8 @@ exports.findOne = async (req, res) => {
   const storyId = req.params.storyId;
 
   try {
+    await requireProjectMember(req.userId, req.params.projectId);
+
     const data = await Story.findByPk(storyId, {
       include: [
         { model: db.storyState, as: "state" },
@@ -94,7 +99,9 @@ exports.findOne = async (req, res) => {
       ],
     });
 
-    if (data) {
+    // the story has to actually live in the project from the URL, otherwise a
+    // member of any project could read any story by guessing its id
+    if (data && String(data.projectId) === String(req.params.projectId)) {
       res.send(data);
     } else {
       res.status(404).send({
@@ -102,7 +109,7 @@ exports.findOne = async (req, res) => {
       });
     }
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Error retrieving Story with id = " + storyId,
     });
   }
@@ -111,6 +118,8 @@ exports.findOne = async (req, res) => {
 exports.findAllForProject = async (req, res) => {
   const projectId = req.params.id;
   try {
+    await requireProjectMember(req.userId, projectId);
+
     const data = await Story.findAll({
       where: { projectId: projectId },
       include: [
@@ -136,11 +145,33 @@ exports.findAllForProject = async (req, res) => {
         },
         { model: db.acceptanceCriteria, as: "acceptanceCriteria" },
         { model: db.comment, as: "comment" },
+        {
+          model: db.relation,
+          as: "relationOne",
+          include: [
+            {
+              model: db.story,
+              as: "storyTwo",
+              attributes: ["id", "title", "typeId", "stateId"],
+            },
+          ],
+        },
+        {
+          model: db.relation,
+          as: "relationTwo",
+          include: [
+            {
+              model: db.story,
+              as: "storyOne",
+              attributes: ["id", "title", "typeId", "stateId"],
+            },
+          ],
+        },
       ],
     });
     res.send(data);
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Something went wrong",
     });
   }
@@ -150,6 +181,8 @@ exports.create = async (req, res) => {
   try {
     const { userId } = await authenticate(req, res);
     const projectId = req.params.id;
+
+    await requireProjectMember(userId, projectId);
 
     if (!req.body.title || !req.body.description || !req.body.stateId) {
       throw httpError("Missing required fields.", 400);
@@ -230,6 +263,8 @@ exports.update = async (req, res) => {
 
   try {
     const { userId } = await authenticate(req, res);
+    await requireProjectMember(userId, req.params.projectId);
+
     const activeUser = await User.findByPk(userId);
 
     const newStory = {};
@@ -254,9 +289,7 @@ exports.update = async (req, res) => {
       },
     });
 
-    if (!story) {
-      throw httpError(`Cannot find Story with id = ${storyId}.`, 404);
-    }
+    assertBelongsToProject(story, req.params.projectId, `Story with id = ${storyId}`);
 
     const context = [{ label: "Story", value: story.title, url: storyUrl(story) }];
 
@@ -347,12 +380,11 @@ exports.update = async (req, res) => {
 exports.delete = async (req, res) => {
   const storyId = req.params.storyId;
   try {
-    await authenticate(req, res);
+    const { userId } = await authenticate(req, res);
+    await requireProjectMember(userId, req.params.projectId);
 
     const story = await Story.findByPk(storyId);
-    if (!story) {
-      throw httpError(`Cannot find Story with id = ${storyId}.`, 404);
-    }
+    assertBelongsToProject(story, req.params.projectId, `Story with id = ${storyId}`);
 
     await story.destroy();
     res.send({ message: "Story deleted successfully!" });

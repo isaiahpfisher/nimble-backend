@@ -1,3 +1,23 @@
+// Authorization is covered on its own in tests/authentication/authorization.test.js.
+// Here it is stubbed permissively so each controller test sees only the
+// controller's behaviour; the guard calls themselves are asserted per action.
+jest.mock("../../app/authentication/authorization", () => ({
+  isAdmin: jest.fn().mockResolvedValue(true),
+  requireAdmin: jest.fn().mockResolvedValue(undefined),
+  requireSelfOrAdmin: jest.fn().mockResolvedValue(undefined),
+  requireProjectMember: jest.fn().mockResolvedValue({ isManager: "1" }),
+  requireMemberManagement: jest.fn().mockResolvedValue({ isManager: "1" }),
+  assertBelongsToProject: jest.fn((record, projectId, label) => {
+    const owner = record && record.projectId;
+    if (owner == null || projectId == null || String(owner) !== String(projectId)) {
+      const error = new Error(`Cannot find ${label}.`);
+      error.statusCode = 404;
+      throw error;
+    }
+    return record;
+  }),
+}));
+
 // Mock the models module so requiring the controller never opens a real DB
 // connection (app/models/index.js instantiates Sequelize at load time).
 jest.mock("../../app/models", () => ({
@@ -117,11 +137,11 @@ describe("findAll", () => {
 
 describe("findOne", () => {
   it("sends the story when found", async () => {
-    const story = { id: 7 };
+    const story = { id: 7, projectId: "1", projectId: "1" };
     Story.findByPk.mockResolvedValue(story);
     const res = mockRes();
 
-    await controller.findOne({ params: { storyId: "7" } }, res);
+    await controller.findOne({ params: { projectId: "1", storyId: "7" } }, res);
 
     expect(Story.findByPk).toHaveBeenCalledWith("7", expect.any(Object));
     expect(res.send).toHaveBeenCalledWith(story);
@@ -132,7 +152,7 @@ describe("findOne", () => {
     Story.findByPk.mockResolvedValue({ id: 7 });
     const res = mockRes();
 
-    await controller.findOne({ params: { storyId: "7" } }, res);
+    await controller.findOne({ params: { projectId: "1", storyId: "7" } }, res);
 
     const { include } = Story.findByPk.mock.calls[0][1];
     expect(include).toEqual(
@@ -164,7 +184,7 @@ describe("findOne", () => {
     Story.findByPk.mockResolvedValue(null);
     const res = mockRes();
 
-    await controller.findOne({ params: { storyId: "99" } }, res);
+    await controller.findOne({ params: { projectId: "1", storyId: "99" } }, res);
 
     expect(res.status).toHaveBeenCalledWith(404);
     expect(res.send).toHaveBeenCalledWith({
@@ -176,7 +196,7 @@ describe("findOne", () => {
     Story.findByPk.mockRejectedValue(new Error("boom"));
     const res = mockRes();
 
-    await controller.findOne({ params: { storyId: "7" } }, res);
+    await controller.findOne({ params: { projectId: "1", storyId: "7" } }, res);
 
     expect(res.status).toHaveBeenCalledWith(500);
     expect(res.send).toHaveBeenCalledWith({ message: "boom" });
@@ -369,10 +389,10 @@ describe("create", () => {
 
 describe("update", () => {
   it("updates the story and sends it back", async () => {
-    const story = { id: 7, update: jest.fn().mockResolvedValue(undefined) };
+    const story = { id: 7, projectId: "1", update: jest.fn().mockResolvedValue(undefined) };
     Story.findByPk.mockResolvedValue(story);
     const req = {
-      params: { storyId: "7" },
+      params: { projectId: "1", storyId: "7" },
       body: storyBody({ title: "Renamed", stateId: 3, assigneeId: 6 }),
     };
     const res = mockRes();
@@ -387,11 +407,11 @@ describe("update", () => {
   });
 
   it("eager-loads the project's completed state", async () => {
-    const story = { id: 7, update: jest.fn().mockResolvedValue(undefined) };
+    const story = { id: 7, projectId: "1", update: jest.fn().mockResolvedValue(undefined) };
     Story.findByPk.mockResolvedValue(story);
     const res = mockRes();
 
-    await controller.update({ params: { storyId: "7" }, body: storyBody() }, res);
+    await controller.update({ params: { projectId: "1", storyId: "7" }, body: storyBody() }, res);
 
     expect(Story.findByPk).toHaveBeenCalledWith("7", {
       include: {
@@ -404,12 +424,12 @@ describe("update", () => {
   });
 
   it("does not let update reassign the story to another project", async () => {
-    const story = { id: 7, update: jest.fn().mockResolvedValue(undefined) };
+    const story = { id: 7, projectId: "1", update: jest.fn().mockResolvedValue(undefined) };
     Story.findByPk.mockResolvedValue(story);
     const res = mockRes();
 
     await controller.update(
-      { params: { storyId: "7" }, body: storyBody({ projectId: 999 }) },
+      { params: { projectId: "1", storyId: "7" }, body: storyBody({ projectId: 999 }) },
       res,
     );
 
@@ -422,7 +442,7 @@ describe("update", () => {
     const res = mockRes();
 
     await controller.update(
-      { params: { storyId: "7" }, body: storyBody({ title: "" }) },
+      { params: { projectId: "1", storyId: "7" }, body: storyBody({ title: "" }) },
       res,
     );
 
@@ -432,11 +452,11 @@ describe("update", () => {
   });
 
   it("allows an omitted acceptanceCriteria list", async () => {
-    const story = { id: 7, update: jest.fn().mockResolvedValue(undefined) };
+    const story = { id: 7, projectId: "1", update: jest.fn().mockResolvedValue(undefined) };
     Story.findByPk.mockResolvedValue(story);
     const res = mockRes();
 
-    await controller.update({ params: { storyId: "7" }, body: storyBody() }, res);
+    await controller.update({ params: { projectId: "1", storyId: "7" }, body: storyBody() }, res);
 
     expect(res.status).not.toHaveBeenCalled();
     expect(story.update).toHaveBeenCalledTimes(1);
@@ -447,7 +467,7 @@ describe("update", () => {
     const res = mockRes();
 
     await controller.update(
-      { params: { storyId: "99" }, body: storyBody() },
+      { params: { projectId: "1", storyId: "99" }, body: storyBody() },
       res,
     );
 
@@ -461,7 +481,7 @@ describe("update", () => {
     global.authenticate = jest.fn().mockRejectedValue(new Error("no auth"));
     const res = mockRes();
 
-    await controller.update({ params: { storyId: "7" }, body: storyBody() }, res);
+    await controller.update({ params: { projectId: "1", storyId: "7" }, body: storyBody() }, res);
 
     expect(res.status).toHaveBeenCalledWith(500);
     expect(res.send).toHaveBeenCalledWith({ message: "no auth" });
@@ -471,11 +491,12 @@ describe("update", () => {
   it("responds 500 when the update fails", async () => {
     Story.findByPk.mockResolvedValue({
       id: 7,
+      projectId: "1",
       update: jest.fn().mockRejectedValue(new Error("write failed")),
     });
     const res = mockRes();
 
-    await controller.update({ params: { storyId: "7" }, body: storyBody() }, res);
+    await controller.update({ params: { projectId: "1", storyId: "7" }, body: storyBody() }, res);
 
     expect(res.status).toHaveBeenCalledWith(500);
     expect(res.send).toHaveBeenCalledWith({ message: "write failed" });
@@ -484,6 +505,7 @@ describe("update", () => {
   it("emails a newly assigned user and reviewer on update", async () => {
     const story = {
       id: 7,
+      projectId: "1",
       title: "Login",
       assigneeId: 1,
       reviewerId: 2,
@@ -494,7 +516,7 @@ describe("update", () => {
 
     await controller.update(
       {
-        params: { storyId: "7" },
+        params: { projectId: "1", storyId: "7" },
         body: storyBody({ assigneeId: 6, reviewerId: 8 }),
       },
       res,
@@ -517,6 +539,7 @@ describe("update", () => {
   it("does not re-notify when the assignee and reviewer are unchanged", async () => {
     const story = {
       id: 7,
+      projectId: "1",
       assigneeId: 6,
       reviewerId: 8,
       update: jest.fn().mockResolvedValue(undefined),
@@ -526,7 +549,7 @@ describe("update", () => {
 
     await controller.update(
       {
-        params: { storyId: "7" },
+        params: { projectId: "1", storyId: "7" },
         body: storyBody({ assigneeId: 6, reviewerId: 8 }),
       },
       res,
@@ -539,6 +562,7 @@ describe("update", () => {
   it("does not notify when a user assigns/reviews the story to themselves", async () => {
     const story = {
       id: 7,
+      projectId: "1",
       assigneeId: 1,
       reviewerId: 2,
       update: jest.fn().mockResolvedValue(undefined),
@@ -548,7 +572,7 @@ describe("update", () => {
 
     await controller.update(
       {
-        params: { storyId: "7" },
+        params: { projectId: "1", storyId: "7" },
         body: storyBody({ assigneeId: 42, reviewerId: 42 }),
       },
       res,
@@ -561,6 +585,7 @@ describe("update", () => {
   it("stamps completedAt when moved into the project's completed state", async () => {
     const story = {
       id: 7,
+      projectId: "1",
       stateId: 1,
       project: { id: 3, completedState: { id: 9 } },
       update: jest.fn().mockResolvedValue(undefined),
@@ -569,7 +594,7 @@ describe("update", () => {
     const res = mockRes();
 
     await controller.update(
-      { params: { storyId: "7" }, body: storyBody({ stateId: 9 }) },
+      { params: { projectId: "1", storyId: "7" }, body: storyBody({ stateId: 9 }) },
       res,
     );
 
@@ -581,6 +606,7 @@ describe("update", () => {
   it("does not stamp completedAt when the state is unchanged", async () => {
     const story = {
       id: 7,
+      projectId: "1",
       stateId: 9,
       project: { id: 3, completedState: { id: 9 } },
       update: jest.fn().mockResolvedValue(undefined),
@@ -589,7 +615,7 @@ describe("update", () => {
     const res = mockRes();
 
     await controller.update(
-      { params: { storyId: "7" }, body: storyBody({ stateId: 9 }) },
+      { params: { projectId: "1", storyId: "7" }, body: storyBody({ stateId: 9 }) },
       res,
     );
 
@@ -601,6 +627,7 @@ describe("update", () => {
   it("does not stamp completedAt when moved into a non-completed state", async () => {
     const story = {
       id: 7,
+      projectId: "1",
       stateId: 1,
       project: { id: 3, completedState: { id: 9 } },
       update: jest.fn().mockResolvedValue(undefined),
@@ -609,7 +636,7 @@ describe("update", () => {
     const res = mockRes();
 
     await controller.update(
-      { params: { storyId: "7" }, body: storyBody({ stateId: 2 }) },
+      { params: { projectId: "1", storyId: "7" }, body: storyBody({ stateId: 2 }) },
       res,
     );
 
@@ -621,6 +648,7 @@ describe("update", () => {
   it("does not crash when the project has no completed state configured", async () => {
     const story = {
       id: 7,
+      projectId: "1",
       stateId: 1,
       project: { id: 3, completedState: null },
       update: jest.fn().mockResolvedValue(undefined),
@@ -629,7 +657,7 @@ describe("update", () => {
     const res = mockRes();
 
     await controller.update(
-      { params: { storyId: "7" }, body: storyBody({ stateId: 9 }) },
+      { params: { projectId: "1", storyId: "7" }, body: storyBody({ stateId: 9 }) },
       res,
     );
 
@@ -642,11 +670,11 @@ describe("update", () => {
 
 describe("delete", () => {
   it("destroys the story", async () => {
-    const story = { id: 7, destroy: jest.fn().mockResolvedValue(undefined) };
+    const story = { id: 7, projectId: "1", destroy: jest.fn().mockResolvedValue(undefined) };
     Story.findByPk.mockResolvedValue(story);
     const res = mockRes();
 
-    await controller.delete({ params: { storyId: "7" } }, res);
+    await controller.delete({ params: { projectId: "1", storyId: "7" } }, res);
 
     expect(story.destroy).toHaveBeenCalledTimes(1);
     expect(res.send).toHaveBeenCalledWith({
@@ -659,7 +687,7 @@ describe("delete", () => {
     Story.findByPk.mockResolvedValue(null);
     const res = mockRes();
 
-    await controller.delete({ params: { storyId: "99" } }, res);
+    await controller.delete({ params: { projectId: "1", storyId: "99" } }, res);
 
     expect(res.status).toHaveBeenCalledWith(404);
     expect(res.send).toHaveBeenCalledWith({
@@ -671,7 +699,7 @@ describe("delete", () => {
     global.authenticate = jest.fn().mockRejectedValue(new Error("no auth"));
     const res = mockRes();
 
-    await controller.delete({ params: { storyId: "7" } }, res);
+    await controller.delete({ params: { projectId: "1", storyId: "7" } }, res);
 
     expect(res.status).toHaveBeenCalledWith(500);
     expect(res.send).toHaveBeenCalledWith({ message: "no auth" });
@@ -681,11 +709,12 @@ describe("delete", () => {
   it("responds 500 when the destroy fails", async () => {
     Story.findByPk.mockResolvedValue({
       id: 7,
+      projectId: "1",
       destroy: jest.fn().mockRejectedValue(new Error("locked")),
     });
     const res = mockRes();
 
-    await controller.delete({ params: { storyId: "7" } }, res);
+    await controller.delete({ params: { projectId: "1", storyId: "7" } }, res);
 
     expect(res.status).toHaveBeenCalledWith(500);
     expect(res.send).toHaveBeenCalledWith({ message: "locked" });

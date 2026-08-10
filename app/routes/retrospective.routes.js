@@ -4,7 +4,7 @@ module.exports = (app) => {
   var router = require("express").Router();
 
   // Retrieve all Retrospective
-  router.get("/retrospectives/", Retrospective.findAll);
+  router.get("/retrospectives/", authenticateRoute, Retrospective.findAll);
 
   app.use("/nimbleapi", router);
 };

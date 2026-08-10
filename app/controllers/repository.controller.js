@@ -5,9 +5,31 @@ const axios = require("axios");
 const { encrypt, getSalt, hashPassword } = require("../authentication/crypto");
 const { authenticate } = require("../authentication/authentication");
 const { httpError } = require("../utils/httpUtils");
+const { requireAdmin, requireProjectMember } = require("../authentication/authorization");
+
+async function findRepositoryForCaller(userId, id) {
+  const repository = await Repository.findByPk(id);
+
+  if (!repository) {
+    throw httpError("Repository not found", 404);
+  }
+
+  try {
+    await requireProjectMember(userId, repository.projectId);
+  } catch (err) {
+    if (err.statusCode === 403) {
+      throw httpError("Repository not found", 404);
+    }
+    throw err;
+  }
+
+  return repository;
+}
 
 exports.create = async (req, res) => {
   try {
+    await requireProjectMember(req.userId, req.params.projectId);
+
     const { githubId, name } = req.body;
 
     // Validate GitHub repository exists
@@ -31,23 +53,27 @@ exports.create = async (req, res) => {
 
     res.send(data);
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Error creating repository.",
     });
   }
 };
 exports.findAll = async (req, res) => {
   try {
+    await requireAdmin(req.userId);
+
     const data = await Repository.findAll();
     res.send(data);
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Something went wrong",
     });
   }
 };
 exports.findAllForProject = async (req, res) => {
   try {
+    await requireProjectMember(req.userId, req.params.projectId);
+
     const data = await Repository.findAll({
       where: {
         projectId: req.params.projectId,
@@ -56,69 +82,48 @@ exports.findAllForProject = async (req, res) => {
 
     res.send(data);
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Something went wrong",
     });
   }
 };
 exports.findOne = async (req, res) => {
   try {
-    const data = await Repository.findByPk(req.params.id);
+    const data = await findRepositoryForCaller(req.userId, req.params.id);
 
-    if (data) {
-      res.send(data);
-    } else {
-      res.status(404).send({
-        message: "Repository not found",
-      });
-    }
+    res.send(data);
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Something went wrong",
     });
   }
 };
 exports.update = async (req, res) => {
   try {
-    const id = req.params.id;
+    const repository = await findRepositoryForCaller(req.userId, req.params.id);
 
-    const [updated] = await Repository.update(req.body, {
-      where: { id: id },
-    });
+    // don't allow updating the projectId, so extract that out of the update body
+    const { projectId, ...updates } = req.body;
+    await repository.update(updates);
 
-    if (updated) {
-      const updatedRepository = await Repository.findByPk(id);
-      res.send(updatedRepository);
-    } else {
-      res.status(404).send({
-        message: "Repository not found",
-      });
-    }
+    res.send(repository);
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Something went wrong",
     });
   }
 };
 exports.delete = async (req, res) => {
   try {
-    const id = req.params.id;
+    const repository = await findRepositoryForCaller(req.userId, req.params.id);
 
-    const deleted = await Repository.destroy({
-      where: { id: id },
+    await repository.destroy();
+
+    res.send({
+      message: "Repository deleted successfully",
     });
-
-    if (deleted) {
-      res.send({
-        message: "Repository deleted successfully",
-      });
-    } else {
-      res.status(404).send({
-        message: "Repository not found",
-      });
-    }
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Something went wrong",
     });
   }

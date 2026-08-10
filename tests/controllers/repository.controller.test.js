@@ -1,3 +1,23 @@
+// Authorization is covered on its own in tests/authentication/authorization.test.js.
+// Here it is stubbed permissively so each controller test sees only the
+// controller's behaviour; the guard calls themselves are asserted per action.
+jest.mock("../../app/authentication/authorization", () => ({
+  isAdmin: jest.fn().mockResolvedValue(true),
+  requireAdmin: jest.fn().mockResolvedValue(undefined),
+  requireSelfOrAdmin: jest.fn().mockResolvedValue(undefined),
+  requireProjectMember: jest.fn().mockResolvedValue({ isManager: "1" }),
+  requireMemberManagement: jest.fn().mockResolvedValue({ isManager: "1" }),
+  assertBelongsToProject: jest.fn((record, projectId, label) => {
+    const owner = record && record.projectId;
+    if (owner == null || projectId == null || String(owner) !== String(projectId)) {
+      const error = new Error(`Cannot find ${label}.`);
+      error.statusCode = 404;
+      throw error;
+    }
+    return record;
+  }),
+}));
+
 jest.mock("axios", () => ({
   get: jest.fn(),
 }));
@@ -357,182 +377,118 @@ describe("findOne", () => {
 });
 
 
-describe("update",()=>{
+// update and delete now load the row first so the caller can be checked against
+// the repository's project, then act on the instance.
+describe("update", () => {
+  it("updates a repository", async () => {
+    const repository = {
+      id: 1,
+      projectId: 5,
+      update: jest.fn().mockResolvedValue(undefined),
+    };
+    Repository.findByPk.mockResolvedValue(repository);
 
+    const req = { userId: 42, params: { id: "1" }, body: { name: "updated" } };
+    const res = mockRes();
 
-  it("updates a repository", async()=>{
+    await controller.update(req, res);
 
+    expect(repository.update).toHaveBeenCalledWith({ name: "updated" });
+    expect(res.send).toHaveBeenCalledWith(repository);
+  });
 
-    Repository.update.mockResolvedValue([1]);
+  it("does not let update move the repository to another project", async () => {
+    const repository = {
+      id: 1,
+      projectId: 5,
+      update: jest.fn().mockResolvedValue(undefined),
+    };
+    Repository.findByPk.mockResolvedValue(repository);
 
+    const req = {
+      userId: 42,
+      params: { id: "1" },
+      body: { name: "updated", projectId: 999 },
+    };
+    const res = mockRes();
+
+    await controller.update(req, res);
+
+    expect(repository.update).toHaveBeenCalledWith(
+      expect.not.objectContaining({ projectId: expect.anything() }),
+    );
+  });
+
+  it("returns 404 when the repository does not exist", async () => {
+    Repository.findByPk.mockResolvedValue(null);
+
+    const req = { userId: 42, params: { id: "1" }, body: {} };
+    const res = mockRes();
+
+    await controller.update(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(404);
+  });
+
+  it("returns 500 when update throws error", async () => {
     Repository.findByPk.mockResolvedValue({
-      id:1,
+      id: 1,
+      projectId: 5,
+      update: jest.fn().mockRejectedValue(new Error("update failed")),
     });
 
+    const req = { userId: 42, params: { id: "1" }, body: {} };
+    const res = mockRes();
 
-    const req={
-      params:{
-        id:"1",
-      },
-      body:{
-        name:"updated",
-      },
-    };
+    await controller.update(req, res);
 
-
-    const res=mockRes();
-
-
-    await controller.update(req,res);
-
-
-    expect(res.send)
-      .toHaveBeenCalled();
-
+    expect(res.status).toHaveBeenCalledWith(500);
   });
-
-
-
-  it("returns 404 when update fails",async()=>{
-
-
-    Repository.update.mockResolvedValue([0]);
-
-
-    const req={
-      params:{
-        id:"1",
-      },
-      body:{},
-    };
-
-
-    const res=mockRes();
-
-
-    await controller.update(req,res);
-
-
-    expect(res.status)
-      .toHaveBeenCalledWith(404);
-
-  });
-
-
-
-  it("returns 500 when update throws error",async()=>{
-
-
-    Repository.update.mockRejectedValue(
-      new Error("update failed")
-    );
-
-
-    const req={
-      params:{
-        id:"1",
-      },
-      body:{},
-    };
-
-
-    const res=mockRes();
-
-
-    await controller.update(req,res);
-
-
-    expect(res.status)
-      .toHaveBeenCalledWith(500);
-
-  });
-
-
 });
 
-
-describe("delete",()=>{
-
-
-  it("deletes repository",async()=>{
-
-
-    Repository.destroy.mockResolvedValue(1);
-
-
-    const req={
-      params:{
-        id:"1",
-      },
+describe("delete", () => {
+  it("deletes repository", async () => {
+    const repository = {
+      id: 1,
+      projectId: 5,
+      destroy: jest.fn().mockResolvedValue(undefined),
     };
+    Repository.findByPk.mockResolvedValue(repository);
 
+    const req = { userId: 42, params: { id: "1" } };
+    const res = mockRes();
 
-    const res=mockRes();
+    await controller.delete(req, res);
 
-
-    await controller.delete(req,res);
-
-
-    expect(res.send)
-      .toHaveBeenCalledWith({
-        message:"Repository deleted successfully",
-      });
-
+    expect(repository.destroy).toHaveBeenCalledTimes(1);
+    expect(res.send).toHaveBeenCalledWith({
+      message: "Repository deleted successfully",
+    });
   });
 
+  it("returns 404 when repository does not exist", async () => {
+    Repository.findByPk.mockResolvedValue(null);
 
+    const req = { userId: 42, params: { id: "1" } };
+    const res = mockRes();
 
-  it("returns 404 when repository does not exist",async()=>{
+    await controller.delete(req, res);
 
-
-    Repository.destroy.mockResolvedValue(0);
-
-
-    const req={
-      params:{
-        id:"1",
-      },
-    };
-
-
-    const res=mockRes();
-
-
-    await controller.delete(req,res);
-
-
-    expect(res.status)
-      .toHaveBeenCalledWith(404);
-
+    expect(res.status).toHaveBeenCalledWith(404);
   });
 
+  it("returns 500 when delete fails", async () => {
+    Repository.findByPk.mockResolvedValue({
+      id: 1,
+      projectId: 5,
+      destroy: jest.fn().mockRejectedValue(new Error("delete failed")),
+    });
 
+    const req = { userId: 42, params: { id: "1" } };
+    const res = mockRes();
 
-  it("returns 500 when delete fails",async()=>{
+    await controller.delete(req, res);
 
-
-    Repository.destroy.mockRejectedValue(
-      new Error("delete failed")
-    );
-
-
-    const req={
-      params:{
-        id:"1",
-      },
-    };
-
-
-    const res=mockRes();
-
-
-    await controller.delete(req,res);
-
-
-    expect(res.status)
-      .toHaveBeenCalledWith(500);
-
+    expect(res.status).toHaveBeenCalledWith(500);
   });
-
-
 });

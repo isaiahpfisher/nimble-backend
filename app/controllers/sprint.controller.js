@@ -1,6 +1,7 @@
 const db = require("../models");
 const Sprint = db.sprint;
 const { authenticate } = require("../authentication/authentication");
+const { requireAdmin, requireProjectMember } = require("../authentication/authorization");
 const { httpError } = require("../utils/httpUtils");
 
 function addDays(date, days) {
@@ -19,7 +20,8 @@ function intervalDays(pattern) {
 
 exports.findAll = async (req, res) => {
   try {
-    await authenticate(req, res);
+    const { userId } = await authenticate(req, res);
+    await requireAdmin(userId);
 
     const data = await Sprint.findAll();
     res.send(data);
@@ -32,7 +34,7 @@ exports.findAll = async (req, res) => {
 
 exports.create = async (req, res) => {
   try {
-    await authenticate(req, res);
+    const { userId } = await authenticate(req, res);
 
     if (
       req.body.title === undefined ||
@@ -42,6 +44,8 @@ exports.create = async (req, res) => {
     ) {
       throw httpError("Missing required fields.", 400);
     }
+
+    await requireProjectMember(userId, req.body.projectId);
 
     const sprint = {
       title: req.body.title,
@@ -65,7 +69,7 @@ exports.create = async (req, res) => {
 
 exports.createRecurring = async (req, res) => {
   try {
-    await authenticate(req, res);
+    const { userId } = await authenticate(req, res);
 
     if (
       req.body.title === undefined ||
@@ -81,6 +85,8 @@ exports.createRecurring = async (req, res) => {
     if (req.body.recurrenceCount < 2) {
       throw httpError("Recurrence Count must be at least 2!", 400);
     }
+
+    await requireProjectMember(userId, req.body.projectId);
 
     const step = intervalDays(req.body.recurrencePattern);
 
@@ -121,7 +127,8 @@ exports.createRecurring = async (req, res) => {
 
 exports.findAllForProject = async (req, res) => {
   try {
-    await authenticate(req, res);
+    const { userId } = await authenticate(req, res);
+    await requireProjectMember(userId, req.params.projectId);
 
     const data = await Sprint.findAll({
       where: {
@@ -140,7 +147,7 @@ exports.findAllForProject = async (req, res) => {
 
 exports.findOne = async (req, res) => {
   try {
-    await authenticate(req, res);
+    const { userId } = await authenticate(req, res);
 
     const id = req.params.id;
 
@@ -158,6 +165,7 @@ exports.findOne = async (req, res) => {
     });
 
     if (data) {
+      await requireProjectMember(userId, data.projectId);
       res.send(data);
     } else {
       throw httpError(`Cannot find Sprint with id = ${id}.`, 404);
@@ -171,7 +179,7 @@ exports.findOne = async (req, res) => {
 
 exports.update = async (req, res) => {
   try {
-    await authenticate(req, res);
+    const { userId } = await authenticate(req, res);
 
     const sprint = await Sprint.findByPk(req.params.id);
 
@@ -179,7 +187,11 @@ exports.update = async (req, res) => {
       throw httpError(`Cannot find Sprint with id = ${req.params.id}.`, 404);
     }
 
-    await sprint.update(req.body);
+    await requireProjectMember(userId, sprint.projectId);
+
+    // don't allow updating the project id, so extract that out of the update body
+    const { projectId, ...updates } = req.body;
+    await sprint.update(updates);
 
     res.send(sprint);
   } catch (err) {
@@ -191,13 +203,15 @@ exports.update = async (req, res) => {
 
 exports.delete = async (req, res) => {
   try {
-    await authenticate(req, res);
+    const { userId } = await authenticate(req, res);
 
     const sprint = await Sprint.findByPk(req.params.id);
 
     if (!sprint) {
       throw httpError(`Cannot find Sprint with id = ${req.params.id}.`, 404);
     }
+
+    await requireProjectMember(userId, sprint.projectId);
 
     await sprint.destroy();
 

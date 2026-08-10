@@ -2,9 +2,13 @@ const db = require("../models");
 const Story = db.story;
 const Sprint = db.sprint;
 const { httpError } = require("../utils/httpUtils");
+const { requireProjectMember } = require("../authentication/authorization");
+
 exports.findAllForProject = async (req, res) => {
   const projectId = req.params.id;
   try {
+    await requireProjectMember(req.userId, projectId);
+
     const stories = await Story.findAll({
       where: { projectId: projectId, sprintId: null },
       include: [
@@ -22,7 +26,7 @@ exports.findAllForProject = async (req, res) => {
 
     res.send(stories);
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Something went wrong",
     });
   }
@@ -33,6 +37,8 @@ exports.assignSprint = async (req, res) => {
   const storyId = req.params.storyId;
 
   try {
+    await requireProjectMember(req.userId, projectId);
+
     if (!req.body.sprintId) {
       throw httpError("Missing required fields.", 400);
     }

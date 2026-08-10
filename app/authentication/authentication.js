@@ -12,10 +12,7 @@ const User = db.user;
 authenticate = async (req, res, require = true) => {
   let auth = req.get("authorization");
   if (auth != null) {
-    if (
-      auth.startsWith("Basic ") &&
-      (typeof require !== "string" || require === "credentials")
-    ) {
+    if (auth.startsWith("Basic ") && (typeof require !== "string" || require === "credentials")) {
       let credentials = auth.slice(6);
       credentials = Buffer.from(credentials, "base64").toString("utf8");
       let i = credentials.indexOf(":");
@@ -45,10 +42,7 @@ authenticate = async (req, res, require = true) => {
         });
       }
     }
-    if (
-      auth.startsWith("Bearer ") &&
-      (typeof require !== "string" || require === "token")
-    ) {
+    if (auth.startsWith("Bearer ") && (typeof require !== "string" || require === "token")) {
       let token = auth.slice(7);
       let sessionId = await decrypt(token);
       let session;
@@ -88,10 +82,7 @@ authenticate = async (req, res, require = true) => {
 authenticateRoute = async (req, res, next) => {
   let auth = req.get("authorization");
   if (auth != null) {
-    if (
-      auth.startsWith("Bearer ") &&
-      (typeof require !== "string" || require === "token")
-    ) {
+    if (auth.startsWith("Bearer ") && (typeof require !== "string" || require === "token")) {
       let token = auth.slice(7);
       let sessionId = await decrypt(token);
       let session;
@@ -103,6 +94,8 @@ authenticateRoute = async (req, res, next) => {
       }
       if (session != null) {
         if (session.expirationDate >= Date.now()) {
+          req.userId = session.userId;
+          req.sessionId = session.id;
           next();
           return;
         } else {

@@ -24,6 +24,13 @@ services:
       CORS_ORIGIN: ${CORS_ORIGIN} # public site URL (belt-and-suspenders; proxy is same-origin)
       RESEND_API_KEY: ${RESEND_API_KEY}
       BASE_FRONTEND_URL: ${BASE_FRONTEND_URL} # used to build links in outbound emails
+      COHERE_API_KEY: ${COHERE_API_KEY} # assistant; the route 503s without it
+      COHERE_MODEL: ${COHERE_MODEL:-command-a-plus-05-2026}
+      # The assistant's MCP tools call our own API back over HTTP, in-container.
+      # Pinned to the loopback IP rather than left to the `localhost` fallback in
+      # app/assistant/tools.js, so tool calls never depend on DNS or on whether
+      # the container came up dual-stack. Must match PORT above.
+      NIMBLE_API_URL: http://127.0.0.1:3200/nimbleapi
     expose:
       - "3200" # visible to the frontend container only, NOT the host/internet
 
