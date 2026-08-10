@@ -2,6 +2,7 @@ const db = require("../models");
 const { authenticate } = require("../authentication/authentication");
 const User = db.user;
 const Session = db.session;
+const SystemLog = db.systemLog;
 const Op = db.Sequelize.Op;
 const { encrypt, decrypt } = require("../authentication/crypto");
 
@@ -21,6 +22,16 @@ exports.login = async (req, res) => {
         expirationDate: expireTime,
       };
       const data = await Session.create(session);
+      await SystemLog.create({
+        subjectType: "USER",
+        subjectId: user.id,
+        action: "LOGIN",
+        metadata: {
+          message: "User logged in",
+          email: user.email,
+        },
+        userId: user.id,
+      });
       let sessionId = data.id;
       let token = await encrypt(sessionId);
       let userInfo = {
@@ -53,6 +64,20 @@ exports.logout = async (req, res) => {
     let sessionId = await decrypt(token);
     if (sessionId == null) return;
     try {
+      const session = await Session.findByPk(sessionId);
+
+      if (session) {
+        await SystemLog.create({
+          subjectType: "USER",
+          subjectId: session.userId,
+          action: "LOGOUT",
+          metadata: {
+            message: "User logged out",
+            email: session.email,
+          },
+          userId: session.userId,
+        });
+      }
       await Session.destroy({ where: { id: sessionId } });
     } catch (error) {
       console.log(error);

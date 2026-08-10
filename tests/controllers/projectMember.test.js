@@ -26,6 +26,9 @@ jest.mock("../../app/models", () => ({
     findByPk: jest.fn(),
     create: jest.fn(),
   },
+    systemLog: {
+    create: jest.fn(),
+  },
   Sequelize: { Op: {} },
 }));
 

@@ -28,6 +28,9 @@ jest.mock("../../app/models", () => ({
   sprint: {
     findByPk: jest.fn(),
   },
+  systemLog: {
+    create: jest.fn(),
+  },
   // Sentinels for the associations the finders eager-load; the controller only
   // passes these through to Sequelize, so identity is all the tests need.
   storyState: { name: "storyState" },

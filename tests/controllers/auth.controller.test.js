@@ -6,7 +6,11 @@ jest.mock("../../app/models", () => ({
   },
   session: {
     create: jest.fn(),
+    findByPk: jest.fn(),
     destroy: jest.fn(),
+  },
+  systemLog: {
+    create: jest.fn().mockResolvedValue({}),
   },
   Sequelize: { Op: {} },
 }));

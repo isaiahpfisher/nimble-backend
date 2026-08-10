@@ -34,6 +34,7 @@ jest.mock("../../app/models", () => {
     user: model(),
     session: model(),
     Sequelize: { Op: { in: "in", or: "or", ne: "ne", like: "like" } },
+    systemLog: model(),
   };
 });
 

@@ -2,6 +2,7 @@ const db = require("../models");
 const User = db.user;
 const Session = db.session;
 const Op = db.Sequelize.Op;
+const SystemLog = db.systemLog;
 const { encrypt, getSalt, hashPassword } = require("../authentication/crypto");
 const { authenticate } = require("../authentication/authentication");
 const { isAdmin, requireAdmin, requireSelfOrAdmin } = require("../authentication/authorization");
@@ -56,6 +57,18 @@ exports.create = async (req, res) => {
 
     try {
       const createdUser = await User.create(user);
+      await SystemLog.create({
+        subjectType: "USER",
+        subjectId: createdUser.id,
+        action: "CREATE_USER",
+        metadata: {
+          message: "User created",
+          firstName: createdUser.firstName,
+          lastName: createdUser.lastName,
+          email: createdUser.email,
+        },
+        userId: createdUser.id,
+      });
       let userId = createdUser.id;
 
       let expireTime = new Date();
@@ -169,6 +182,7 @@ exports.findByEmail = async (req, res) => {
 exports.update = async (req, res) => {
   try {
     const { userId } = await authenticate(req, res);
+
     await requireSelfOrAdmin(userId, req.params.id);
 
     const user = await User.findByPk(req.params.id);
@@ -189,6 +203,19 @@ exports.update = async (req, res) => {
 
     await user.update(updatedUser);
 
+    await SystemLog.create({
+      subjectType: "USER",
+      subjectId: user.id,
+      action: "UPDATE_USER",
+      metadata: {
+        message: "User updated",
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        changes: req.body,
+      },
+      userId: userId,
+    });
     res.send(updatedUser);
   } catch (err) {
     res.status(err.statusCode || 500).send({
@@ -200,14 +227,32 @@ exports.update = async (req, res) => {
 // Delete a User with the specified id in the request
 exports.delete = async (req, res) => {
   const id = req.params.id;
-
+  
   try {
     const { userId } = await authenticate(req, res);
     await requireSelfOrAdmin(userId, id);
 
+    const user = await User.findByPk(id);
+
+    if (user) {
+      await SystemLog.create({
+        subjectType: "USER",
+        subjectId: user.id,
+        action: "DELETE_USER",
+        metadata: {
+          message: "User deleted",
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+        },
+        userId: userId,
+      });
+    }
+
     const number = await User.destroy({
       where: { id: id },
     });
+
     if (number == 1) {
       res.send({
         message: "User was deleted successfully!",
@@ -219,25 +264,25 @@ exports.delete = async (req, res) => {
     }
   } catch (err) {
     res.status(err.statusCode || 500).send({
-      message: err.message || "Could not delete User with id = " + id,
+      message: err.message || "Some error occurred while removing all people.",
     });
   }
 };
-
-// Delete all People from the database.
 exports.deleteAll = async (req, res) => {
   try {
-    const { userId } = await authenticate(req, res);
-    await requireAdmin(userId);
+    await requireAdmin(req.userId);
 
     const number = await User.destroy({
       where: {},
       truncate: false,
     });
-    res.send({ message: `${number} People were deleted successfully!` });
+
+    res.send({
+      message: `${number} People were deleted successfully!`,
+    });
   } catch (err) {
     res.status(err.statusCode || 500).send({
-      message: err.message || "Some error occurred while removing all people.",
+      message: err.message || "Some error occurred while removing all users.",
     });
   }
 };

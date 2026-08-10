@@ -37,6 +37,9 @@ jest.mock("../../app/models", () => ({
     update: jest.fn(),
     destroy: jest.fn(),
   },
+  systemLog: {
+    create: jest.fn(),
+  },
   Sequelize: { Op: {} },
 }));
 
@@ -301,87 +304,108 @@ describe("findAllForProject", () => {
 
 
 describe("findOne", () => {
-
   it("returns a repository", async () => {
-
     const repository = {
-      id:1,
+      id: 1,
+      projectId: 5,
     };
-
 
     Repository.findByPk.mockResolvedValue(repository);
 
-
     const req = {
-      params:{
-        id:"1",
+      userId: 42,
+      params: {
+        id: "1",
       },
     };
-
 
     const res = mockRes();
 
+    await controller.findOne(req, res);
 
-    await controller.findOne(req,res);
+    expect(Repository.findByPk).toHaveBeenCalledWith("1");
 
-
-    expect(res.send)
-      .toHaveBeenCalledWith(repository);
-
+    expect(res.send).toHaveBeenCalledWith(repository);
   });
 
-
-
   it("returns 404 when repository does not exist", async () => {
-
     Repository.findByPk.mockResolvedValue(null);
 
-
-    const req={
-      params:{
-        id:"1",
+    const req = {
+      userId: 42,
+      params: {
+        id: "1",
       },
     };
 
+    const res = mockRes();
 
-    const res=mockRes();
+    await controller.findOne(req, res);
 
+    expect(res.status).toHaveBeenCalledWith(404);
 
-    await controller.findOne(req,res);
-
-
-    expect(res.status)
-      .toHaveBeenCalledWith(404);
-
+    expect(res.send).toHaveBeenCalledWith({
+      message: "Repository not found",
+    });
   });
 
-
-
   it("returns 500 when findOne fails", async () => {
-
     Repository.findByPk.mockRejectedValue(
       new Error("find one failed")
     );
 
-
-    const req={
-      params:{
-        id:"1",
+    const req = {
+      userId: 42,
+      params: {
+        id: "1",
       },
     };
 
+    const res = mockRes();
 
-    const res=mockRes();
+    await controller.findOne(req, res);
 
+    expect(res.status).toHaveBeenCalledWith(500);
 
-    await controller.findOne(req,res);
-
-
-    expect(res.status)
-      .toHaveBeenCalledWith(500);
-
+    expect(res.send).toHaveBeenCalledWith({
+      message: "find one failed",
+    });
   });
 
+  it("returns 500 when project membership check fails", async () => {
+    const repository = {
+      id: 1,
+      projectId: 5,
+    };
+
+    Repository.findByPk.mockResolvedValue(repository);
+
+    const authorizationError = new Error("authorization failed");
+    authorizationError.statusCode = 500;
+
+    const authorization = require("../../app/authentication/authorization");
+
+    authorization.requireProjectMember.mockRejectedValueOnce(
+      authorizationError
+    );
+
+    const req = {
+      userId: 42,
+      params: {
+        id: "1",
+      },
+    };
+
+    const res = mockRes();
+
+    await controller.findOne(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+
+    expect(res.send).toHaveBeenCalledWith({
+      message: "authorization failed",
+    });
+  });
 });
 
 

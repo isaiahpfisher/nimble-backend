@@ -7,6 +7,9 @@ jest.mock("../../app/models", () => ({
   session: {
     create: jest.fn(),
   },
+  systemLog: {
+    create: jest.fn().mockResolvedValue({}),
+  },
   Sequelize: { Op: {} },
 }));
 
@@ -88,16 +91,27 @@ describe("githubLogin", () => {
 
   it("creates a session and returns user info with a token for a new user", async () => {
     global.fetch
-      .mockResolvedValueOnce({ json: () => Promise.resolve({ access_token: "gh-token" }) })
-      .mockResolvedValueOnce({
-        json: () =>
-          Promise.resolve({
-            id: 99,
-            name: "Ada Lovelace",
+    .mockResolvedValueOnce({
+      json: () => Promise.resolve({ access_token: "gh-token" }),
+    })
+    .mockResolvedValueOnce({
+      json: () =>
+        Promise.resolve({
+          id: 99,
+          name: "Ada Lovelace",
+          avatar_url: "http://avatar",
+        }),
+    })
+    .mockResolvedValueOnce({
+      json: () =>
+        Promise.resolve([
+          {
             email: "ada@example.com",
-            avatar_url: "http://avatar",
-          }),
-      });
+            primary: true,
+            verified: true,
+          },
+        ]),
+    });
     User.findOrCreate.mockResolvedValue([
       {
         id: 1,
@@ -156,10 +170,19 @@ describe("githubLogin", () => {
 
   it("falls back to login and '-' lastName when name has a single word", async () => {
     global.fetch
-      .mockResolvedValueOnce({ json: () => Promise.resolve({ access_token: "gh-token" }) })
-      .mockResolvedValueOnce({
-        json: () => Promise.resolve({ id: 5, login: "adalovelace", email: null }),
-      });
+    .mockResolvedValueOnce({
+      json: () => Promise.resolve({ access_token: "gh-token" }),
+    })
+    .mockResolvedValueOnce({
+      json: () =>
+        Promise.resolve({
+          id: 5,
+          login: "adalovelace",
+        }),
+    })
+    .mockResolvedValueOnce({
+      json: () => Promise.resolve([]),
+    });
     User.findOrCreate.mockResolvedValue([
       { id: 2, firstName: "adalovelace", lastName: "-", email: null, isAdmin: false },
     ]);
