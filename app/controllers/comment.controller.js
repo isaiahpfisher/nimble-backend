@@ -5,13 +5,14 @@ const User = db.user;
 const AcceptanceCriteria = db.acceptanceCriteria;
 const Op = db.Sequelize.Op;
 const { httpError } = require("../utils/httpUtils");
+const { requireAdmin, requireProjectMember } = require("../authentication/authorization");
 const { notifyMentionedUser, commentToPlainText, storyUrl } = require("../utils/email");
 const { recordActivity, ACTIVITY_ACTION, SUBJECT_TYPE } = require("../utils/activity");
 
 // helper functions for validation
-async function findStoryOrFail(id) {
+async function findStoryOrFail(id, projectId) {
   const story = await Story.findOne({
-    where: { id },
+    where: !projectId ? { id } : { id, projectId },
   });
   if (!story) {
     throw httpError(`Cannot find Story with id = ${id}.`, 404);
@@ -52,10 +53,12 @@ async function getMentionedUsers(commentText) {
 
 exports.findAll = async (req, res) => {
   try {
+    await requireAdmin(req.userId);
+
     const data = await Comment.findAll();
     res.send(data);
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Something went wrong",
     });
   }
@@ -65,7 +68,8 @@ exports.findAllForStory = async (req, res) => {
   const storyId = req.params.storyId;
 
   try {
-    const story = await findStoryOrFail(storyId);
+    await requireProjectMember(req.userId, req.params.projectId);
+    const story = await findStoryOrFail(storyId, req.params.projectId);
     const data = await story.getComment({
       include: {
         model: db.user,
@@ -86,8 +90,9 @@ exports.createForStory = async (req, res) => {
   const { userId } = await authenticate(req, res);
 
   try {
+    await requireProjectMember(userId, req.params.projectId);
     const user = await User.findByPk(userId);
-    const story = await findStoryOrFail(storyId);
+    const story = await findStoryOrFail(storyId, req.params.projectId);
     validate(req.body);
 
     const data = await story.createComment({
@@ -143,6 +148,8 @@ exports.findAllForCriterion = async (req, res) => {
   const criterionId = req.params.criterionId;
 
   try {
+    await requireProjectMember(req.userId, req.params.projectId);
+    await findStoryOrFail(req.params.storyId, req.params.projectId);
     const criterion = await findCriterionOrFail(criterionId);
     const data = await criterion.getComment({
       include: {
@@ -164,6 +171,8 @@ exports.createForCriterion = async (req, res) => {
   const { userId } = await authenticate(req, res);
 
   try {
+    await requireProjectMember(userId, req.params.projectId);
+    await findStoryOrFail(req.params.storyId, req.params.projectId);
     const user = await User.findByPk(userId);
     const criterion = await findCriterionOrFail(criterionId);
     const parentStory = await criterion.getStory();
@@ -239,7 +248,7 @@ exports.update = async (req, res) => {
     }
 
     if (comment.userId !== userId) {
-      throw httpError("You do not have permission to update this comment.", 400);
+      throw httpError("You do not have permission to update this comment.", 403);
     }
 
     await comment.update({
@@ -266,8 +275,8 @@ exports.delete = async (req, res) => {
       throw httpError(`Cannot find Comment with id = ${id}.`, 400);
     }
 
-    if (comment.userId !== userId) {
-      throw httpError("You do not have permission to delete this comment.", 400);
+    if (comment.userId !== userId && !user.isAdmin) {
+      throw httpError("You do not have permission to delete this comment.", 403);
     }
 
     let label;

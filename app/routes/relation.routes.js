@@ -4,7 +4,7 @@ module.exports = (app) => {
   var router = require("express").Router();
 
   // Retrieve all Relation
-  router.get("/relations/", Relation.findAll);
+  router.get("/relations/", authenticateRoute, Relation.findAll);
 
   router.post(
     "/projects/:projectId/stories/:storyId/relations",

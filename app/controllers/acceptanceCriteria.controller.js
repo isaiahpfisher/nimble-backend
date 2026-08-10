@@ -4,6 +4,7 @@ const Story = db.story;
 const User = db.user;
 const Op = db.Sequelize.Op;
 const { httpError } = require("../utils/httpUtils");
+const { requireAdmin, requireProjectMember } = require("../authentication/authorization");
 const { recordActivity, ACTIVITY_ACTION, SUBJECT_TYPE } = require("../utils/activity");
 
 // helper functions for validation
@@ -29,10 +30,12 @@ function validate(body) {
 // controller actions
 exports.findAll = async (req, res) => {
   try {
+    await requireAdmin(req.userId);
+
     const data = await AcceptanceCriteria.findAll();
     res.send(data);
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Something went wrong",
     });
   }
@@ -41,6 +44,7 @@ exports.findAll = async (req, res) => {
 exports.create = async (req, res) => {
   try {
     const { userId } = await authenticate(req, res);
+    await requireProjectMember(userId, req.params.projectId);
     await findStoryOrFail(req.params.storyId, req.params.projectId);
     const user = await User.findByPk(userId);
     validate(req.body);
@@ -72,6 +76,7 @@ exports.create = async (req, res) => {
 exports.update = async (req, res) => {
   try {
     const { userId } = await authenticate(req, res);
+    await requireProjectMember(userId, req.params.projectId);
     const user = await User.findByPk(userId);
     await findStoryOrFail(req.params.storyId, req.params.projectId);
     validate(req.body);
@@ -125,6 +130,7 @@ exports.update = async (req, res) => {
 exports.delete = async (req, res) => {
   try {
     const { userId } = await authenticate(req, res);
+    await requireProjectMember(userId, req.params.projectId);
     await findStoryOrFail(req.params.storyId, req.params.projectId);
     const user = await User.findByPk(userId);
 

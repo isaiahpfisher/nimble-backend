@@ -5,14 +5,11 @@ const StoryType = db.storyType;
 const StoryState = db.storyState;
 const User = db.user;
 const { authenticate } = require("../authentication/authentication");
+const { requireAdmin, requireProjectMember } = require("../authentication/authorization");
 const Op = db.Sequelize.Op;
 const { httpError } = require("../utils/httpUtils");
 
-const DEFAULT_PROJECT_STORY_TYPES = [
-  { name: "Feature" },
-  { name: "Bug" },
-  { name: "Chore" },
-];
+const DEFAULT_PROJECT_STORY_TYPES = [{ name: "Feature" }, { name: "Bug" }, { name: "Chore" }];
 
 const DEFAULT_PROJECT_STORY_STATES = [
   { name: "Not Started", order: 1 },
@@ -24,6 +21,8 @@ const DEFAULT_PROJECT_STORY_STATES = [
 
 exports.findAll = async (req, res) => {
   try {
+    await requireAdmin(req.userId);
+
     const data = await Project.findAll({
       include: {
         model: db.projectMember,
@@ -38,7 +37,7 @@ exports.findAll = async (req, res) => {
     });
     res.send(data);
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Error retrieving all projects",
     });
   }
@@ -65,8 +64,10 @@ exports.findAllForUser = async (req, res) => {
 };
 
 exports.findOne = async (req, res) => {
+  const id = req.params.id;
   try {
-    const id = req.params.id;
+    await requireProjectMember(req.userId, id);
+
     const data = await Project.findByPk(id, {
       include: [
         { model: db.storyType, as: "storyType" },
@@ -96,7 +97,7 @@ exports.findOne = async (req, res) => {
       });
     }
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Error retrieving Project with id = " + id,
     });
   }
@@ -129,12 +130,8 @@ exports.create = async (req, res) => {
       isManager: "1",
     });
 
-    await StoryType.bulkCreate(
-      DEFAULT_PROJECT_STORY_TYPES.map((t) => ({ ...t, projectId: data.id })),
-    );
-    const states = await StoryState.bulkCreate(
-      DEFAULT_PROJECT_STORY_STATES.map((s) => ({ ...s, projectId: data.id })),
-    );
+    await StoryType.bulkCreate(DEFAULT_PROJECT_STORY_TYPES.map((t) => ({ ...t, projectId: data.id })));
+    const states = await StoryState.bulkCreate(DEFAULT_PROJECT_STORY_STATES.map((s) => ({ ...s, projectId: data.id })));
 
     await data.update({
       completedStateId: states[states.length - 1].id,
@@ -150,12 +147,10 @@ exports.create = async (req, res) => {
 
 exports.adminCreate = async (req, res) => {
   try {
-    if (
-      !req.body.title ||
-      !req.body.deadline ||
-      !req.body.description ||
-      !req.body.managerId
-    ) {
+    const { userId } = await authenticate(req, res);
+    await requireAdmin(userId);
+
+    if (!req.body.title || !req.body.deadline || !req.body.description || !req.body.managerId) {
       throw httpError("Missing required fields.", 400);
     }
 
@@ -210,7 +205,8 @@ exports.adminCreate = async (req, res) => {
 
 exports.update = async (req, res) => {
   try {
-    await authenticate(req, res);
+    const { userId } = await authenticate(req, res);
+    await requireProjectMember(userId, req.params.id);
 
     const project = await Project.findByPk(req.params.id);
     if (!project) {
@@ -224,24 +220,24 @@ exports.update = async (req, res) => {
       }
     }
 
-    if (req.body.completedStateId) {
-      if (
-        !(await StoryState.findOne({
-          where: { id: req.body.completedStateId },
-        }))
-      ) {
-        throw httpError("Invalid completed state.", 400);
+    const STATE_FIELDS = {
+      completedStateId: "completed state",
+      branchCreationStateId: "branch creation state",
+      prReviewStateId: "PR review state",
+    };
+
+    for (const [field, label] of Object.entries(STATE_FIELDS)) {
+      if (req.body[field]) {
+        const state = await StoryState.findOne({
+          where: { id: req.body[field], projectId: req.params.id },
+        });
+        if (!state) {
+          throw httpError(`Invalid ${label}.`, 400);
+        }
       }
     }
 
-    const {
-      title,
-      description,
-      deadline,
-      branchCreationStateId,
-      prReviewStateId,
-      completedStateId,
-    } = req.body;
+    const { title, description, deadline, branchCreationStateId, prReviewStateId, completedStateId } = req.body;
     await project.update({
       title,
       description,
@@ -261,7 +257,8 @@ exports.update = async (req, res) => {
 
 exports.delete = async (req, res) => {
   try {
-    await authenticate(req, res);
+    const { userId } = await authenticate(req, res);
+    await requireProjectMember(userId, req.params.id);
 
     const project = await Project.findByPk(req.params.id);
     if (!project) {

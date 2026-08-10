@@ -1,3 +1,23 @@
+// Authorization is covered on its own in tests/authentication/authorization.test.js.
+// Here it is stubbed permissively so each controller test sees only the
+// controller's behaviour; the guard calls themselves are asserted per action.
+jest.mock("../../app/authentication/authorization", () => ({
+  isAdmin: jest.fn().mockResolvedValue(true),
+  requireAdmin: jest.fn().mockResolvedValue(undefined),
+  requireSelfOrAdmin: jest.fn().mockResolvedValue(undefined),
+  requireProjectMember: jest.fn().mockResolvedValue({ isManager: "1" }),
+  requireMemberManagement: jest.fn().mockResolvedValue({ isManager: "1" }),
+  assertBelongsToProject: jest.fn((record, projectId, label) => {
+    const owner = record && record.projectId;
+    if (owner == null || projectId == null || String(owner) !== String(projectId)) {
+      const error = new Error(`Cannot find ${label}.`);
+      error.statusCode = 404;
+      throw error;
+    }
+    return record;
+  }),
+}));
+
 // Mock the models module so requiring the controller never opens a real DB
 // connection (app/models/index.js instantiates Sequelize at load time).
 jest.mock("../../app/models", () => ({
@@ -226,9 +246,7 @@ describe("update", () => {
 
   it("responds 400 when another state already has the name", async () => {
     const state = { id: 9, update: jest.fn() };
-    StoryState.findOne
-      .mockResolvedValueOnce(state)
-      .mockResolvedValueOnce({ id: 12 });
+    StoryState.findOne.mockResolvedValueOnce(state).mockResolvedValueOnce({ id: 12 });
     const req = {
       params: { projectId: "1", stateId: "9" },
       body: { name: "Done" },
@@ -265,28 +283,66 @@ describe("update", () => {
 
 describe("reorder", () => {
   it("bulk-upserts the states' names and order", async () => {
-    StoryState.bulkCreate.mockResolvedValue([]);
     const states = [
       { id: 1, name: "To Do", order: 1 },
       { id: 2, name: "Doing", order: 2 },
     ];
-    const req = { params: { projectId: "1" }, body: { states } };
+    StoryState.findAll.mockResolvedValue([{ id: 1 }, { id: 2 }]);
+    StoryState.bulkCreate.mockResolvedValue([]);
+    const req = { userId: 42, params: { projectId: "1" }, body: { states } };
     const res = mockRes();
 
     await controller.reorder(req, res);
 
-    expect(StoryState.bulkCreate).toHaveBeenCalledWith(states, {
-      updateOnDuplicate: ["name", "order"],
-    });
+    // every row is stamped with the project from the URL, so the upsert cannot
+    // reach another project's states
+    expect(StoryState.bulkCreate).toHaveBeenCalledWith(
+      states.map((s) => ({ ...s, projectId: "1" })),
+      { updateOnDuplicate: ["name", "order"] },
+    );
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.send).toHaveBeenCalledWith({
       message: "Successfully reordered states.",
     });
   });
 
+  it("responds 400 when a state belongs to another project", async () => {
+    const states = [
+      { id: 1, name: "To Do", order: 1 },
+      { id: 2, name: "Doing", order: 2 },
+    ];
+    // only one of the two ids is owned by this project
+    StoryState.findAll.mockResolvedValue([{ id: 1 }]);
+    const req = { userId: 42, params: { projectId: "1" }, body: { states } };
+    const res = mockRes();
+
+    await controller.reorder(req, res);
+
+    expect(StoryState.bulkCreate).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.send).toHaveBeenCalledWith({
+      message: "At least one state does not belong to this project.",
+    });
+  });
+
+  it("responds 400 when no states are given", async () => {
+    const req = { userId: 42, params: { projectId: "1" }, body: { states: [] } };
+    const res = mockRes();
+
+    await controller.reorder(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(StoryState.bulkCreate).not.toHaveBeenCalled();
+  });
+
   it("responds 500 when the bulk upsert fails", async () => {
+    StoryState.findAll.mockResolvedValue([{ id: 1 }]);
     StoryState.bulkCreate.mockRejectedValue(new Error("bulk failed"));
-    const req = { params: { projectId: "1" }, body: { states: [] } };
+    const req = {
+      userId: 42,
+      params: { projectId: "1" },
+      body: { states: [{ id: 1, name: "To Do", order: 1 }] },
+    };
     const res = mockRes();
 
     await controller.reorder(req, res);
@@ -312,10 +368,7 @@ describe("delete", () => {
     expect(StoryState.findOne).toHaveBeenCalledWith({
       where: { id: "9", projectId: "1" },
     });
-    expect(Story.update).toHaveBeenCalledWith(
-      { stateId: 4 },
-      { where: { stateId: "9" } },
-    );
+    expect(Story.update).toHaveBeenCalledWith({ stateId: 4 }, { where: { stateId: "9" } });
     expect(state.destroy).toHaveBeenCalledTimes(1);
     expect(res.send).toHaveBeenCalledWith({
       message: "Story state deleted successfully!",

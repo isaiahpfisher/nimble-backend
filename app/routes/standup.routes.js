@@ -4,7 +4,7 @@ module.exports = (app) => {
   var router = require("express").Router();
 
   // Retrieve all Standup
-  router.get("/standups/", Standup.findAll);
+  router.get("/standups/", authenticateRoute, Standup.findAll);
 
   app.use("/nimbleapi", router);
 };

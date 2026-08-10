@@ -4,16 +4,19 @@ const Story = db.story;
 const User = db.user;
 const Op = db.Sequelize.Op;
 const { httpError } = require("../utils/httpUtils");
+const { requireAdmin, requireProjectMember } = require("../authentication/authorization");
 const { recordActivity, ACTIVITY_ACTION, SUBJECT_TYPE, RELATION_DIRECTION } = require("../utils/activity");
 
 const RELATION_TYPES = ["BLOCKS", "RELATES_TO", "DUPLICATES", "PARENT_OF"];
 
 exports.findAll = async (req, res) => {
   try {
+    await requireAdmin(req.userId);
+
     const data = await Relation.findAll();
     res.send(data);
   } catch (err) {
-    res.status(500).send({
+    res.status(err.statusCode || 500).send({
       message: err.message || "Something went wrong",
     });
   }
@@ -22,6 +25,7 @@ exports.findAll = async (req, res) => {
 exports.create = async (req, res) => {
   try {
     const { userId } = await authenticate(req, res);
+    await requireProjectMember(userId, req.params.projectId);
     const user = await User.findByPk(userId);
 
     const { projectId, storyId } = req.params;
@@ -115,9 +119,18 @@ exports.create = async (req, res) => {
 exports.delete = async (req, res) => {
   try {
     const { userId } = await authenticate(req, res);
+    await requireProjectMember(userId, req.params.projectId);
     const user = await User.findByPk(userId);
 
-    const { storyId, relationId } = req.params;
+    const { projectId, storyId, relationId } = req.params;
+
+    const anchorStory = await Story.findOne({
+      where: { id: storyId, projectId },
+    });
+
+    if (!anchorStory) {
+      throw httpError(`Cannot find Story with id = ${storyId}.`, 404);
+    }
 
     const relation = await Relation.findOne({
       where: { id: relationId, storyOneId: storyId },

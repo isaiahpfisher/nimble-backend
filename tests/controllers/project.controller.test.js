@@ -1,3 +1,23 @@
+// Authorization is covered on its own in tests/authentication/authorization.test.js.
+// Here it is stubbed permissively so each controller test sees only the
+// controller's behaviour; the guard calls themselves are asserted per action.
+jest.mock("../../app/authentication/authorization", () => ({
+  isAdmin: jest.fn().mockResolvedValue(true),
+  requireAdmin: jest.fn().mockResolvedValue(undefined),
+  requireSelfOrAdmin: jest.fn().mockResolvedValue(undefined),
+  requireProjectMember: jest.fn().mockResolvedValue({ isManager: "1" }),
+  requireMemberManagement: jest.fn().mockResolvedValue({ isManager: "1" }),
+  assertBelongsToProject: jest.fn((record, projectId, label) => {
+    const owner = record && record.projectId;
+    if (owner == null || projectId == null || String(owner) !== String(projectId)) {
+      const error = new Error(`Cannot find ${label}.`);
+      error.statusCode = 404;
+      throw error;
+    }
+    return record;
+  }),
+}));
+
 // Mock the models module so requiring the controller never opens a real DB
 // connection (app/models/index.js instantiates Sequelize at load time).
 jest.mock("../../app/models", () => ({
@@ -402,6 +422,7 @@ describe("update", () => {
     const update = jest.fn().mockResolvedValue({});
     const project = { id: 3, update };
     Project.findByPk.mockResolvedValue(project);
+    db.storyState.findOne.mockResolvedValue({ id: 11 });
     const req = {
       params: { id: "3" },
       body: { branchCreationStateId: 11, prReviewStateId: 22 },
@@ -469,7 +490,9 @@ describe("update", () => {
 
     await controller.update(req, res);
 
-    expect(db.storyState.findOne).toHaveBeenCalledWith({ where: { id: 12 } });
+    expect(db.storyState.findOne).toHaveBeenCalledWith({
+      where: { id: 12, projectId: "3" },
+    });
     expect(update).toHaveBeenCalledWith(
       expect.objectContaining({ completedStateId: 12 }),
     );
