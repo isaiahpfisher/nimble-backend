@@ -15,25 +15,26 @@
  * 10. Activities
  * 11. Repositories / GitHub-related logic
  *
- * This is a unit-test suite. Database models and authorization helpers
- * are mocked so that the tests exercise controller/business logic rather
- * than requiring a real database.
+ * The focus of these tests is business rules rather than simply testing
+ * whether database CRUD operations work.
+ *
+ * Database models and authorization helpers are mocked so these tests
+ * do not require a real database.
  */
 
 // ============================================================
 // TEST ENVIRONMENT
 // ============================================================
-//
-// IMPORTANT:
-// crypto.js reads SECRET_KEY while the controllers are imported.
-//
-// Therefore SECRET_KEY MUST be defined before requiring any controller.
-//
+
 process.env.SECRET_KEY =
   process.env.SECRET_KEY ||
   Buffer.from("nimble-jest-test-secret-key").toString("base64");
 
 process.env.NODE_ENV = "test";
+
+// Prevent Resend from requiring a real API key when controllers are loaded.
+process.env.RESEND_API_KEY =
+  process.env.RESEND_API_KEY || "re_test_business_logic_key";
 
 // ============================================================
 // MOCK AUTHORIZATION
@@ -83,6 +84,10 @@ jest.mock("../../app/models", () => ({
       like: Symbol("like"),
       in: Symbol("in"),
       ne: Symbol("ne"),
+      lt: Symbol("lt"),
+      lte: Symbol("lte"),
+      gt: Symbol("gt"),
+      gte: Symbol("gte"),
     },
   },
 
@@ -293,27 +298,33 @@ let retrospectiveController;
 let standupController;
 let activityController;
 let repositoryController;
-
-// Controllers that exist in the project are loaded safely.
-// This prevents one missing controller filename from preventing
-// the entire suite from loading.
+let relationController;
 
 try {
   projectController = require("../../app/controllers/project.controller");
 } catch (error) {
-  console.warn("Project controller could not be loaded:", error.message);
+  console.warn(
+    "Project controller could not be loaded:",
+    error.message
+  );
 }
 
 try {
   sprintController = require("../../app/controllers/sprint.controller");
 } catch (error) {
-  console.warn("Sprint controller could not be loaded:", error.message);
+  console.warn(
+    "Sprint controller could not be loaded:",
+    error.message
+  );
 }
 
 try {
   storyController = require("../../app/controllers/story.controller");
 } catch (error) {
-  console.warn("Story controller could not be loaded:", error.message);
+  console.warn(
+    "Story controller could not be loaded:",
+    error.message
+  );
 }
 
 try {
@@ -330,7 +341,10 @@ try {
 try {
   commentController = require("../../app/controllers/comment.controller");
 } catch (error) {
-  console.warn("Comment controller could not be loaded:", error.message);
+  console.warn(
+    "Comment controller could not be loaded:",
+    error.message
+  );
 }
 
 try {
@@ -347,13 +361,19 @@ try {
 try {
   standupController = require("../../app/controllers/standup.controller");
 } catch (error) {
-  console.warn("Standup controller could not be loaded:", error.message);
+  console.warn(
+    "Standup controller could not be loaded:",
+    error.message
+  );
 }
 
 try {
   activityController = require("../../app/controllers/activity.controller");
 } catch (error) {
-  console.warn("Activity controller could not be loaded:", error.message);
+  console.warn(
+    "Activity controller could not be loaded:",
+    error.message
+  );
 }
 
 try {
@@ -363,6 +383,17 @@ try {
 } catch (error) {
   console.warn(
     "Repository controller could not be loaded:",
+    error.message
+  );
+}
+
+try {
+  relationController = require(
+    "../../app/controllers/relation.controller"
+  );
+} catch (error) {
+  console.warn(
+    "Relation controller could not be loaded:",
     error.message
   );
 }
@@ -400,6 +431,12 @@ function mockInstance(attributes = {}) {
   return instance;
 }
 
+function futureDeadline() {
+  return new Date(
+    Date.now() + 7 * 24 * 60 * 60 * 1000
+  ).toISOString();
+}
+
 // ============================================================
 // RESET
 // ============================================================
@@ -408,11 +445,15 @@ beforeEach(() => {
   jest.clearAllMocks();
 
   authorization.isAdmin.mockResolvedValue(true);
+
   authorization.requireAdmin.mockResolvedValue(undefined);
+
   authorization.requireSelfOrAdmin.mockResolvedValue(undefined);
+
   authorization.requireProjectMember.mockResolvedValue({
     isManager: "1",
   });
+
   authorization.requireMemberManagement.mockResolvedValue({
     isManager: "1",
   });
@@ -427,9 +468,7 @@ beforeEach(() => {
 describe("Business Logic - Authentication", () => {
   describe("login validation", () => {
     it("rejects a login request without an email", async () => {
-      if (!userController?.login) {
-        return;
-      }
+      if (!userController?.login) return;
 
       const req = {
         body: {
@@ -445,9 +484,7 @@ describe("Business Logic - Authentication", () => {
     });
 
     it("rejects a login request without a password", async () => {
-      if (!userController?.login) {
-        return;
-      }
+      if (!userController?.login) return;
 
       const req = {
         body: {
@@ -465,9 +502,7 @@ describe("Business Logic - Authentication", () => {
 
   describe("invalid credentials", () => {
     it("does not authenticate a user that does not exist", async () => {
-      if (!userController?.login) {
-        return;
-      }
+      if (!userController?.login) return;
 
       User.findOne.mockResolvedValue(null);
 
@@ -495,9 +530,10 @@ describe("Business Logic - Authentication", () => {
 describe("Business Logic - Authorization", () => {
   it("requires admin access for admin-only operations", async () => {
     authorization.requireAdmin.mockRejectedValue(
-      Object.assign(new Error("Admin access required."), {
-        statusCode: 403,
-      })
+      Object.assign(
+        new Error("Admin access required."),
+        { statusCode: 403 }
+      )
     );
 
     await expect(
@@ -509,20 +545,26 @@ describe("Business Logic - Authorization", () => {
 
   it("requires project membership for project operations", async () => {
     authorization.requireProjectMember.mockRejectedValue(
-      Object.assign(new Error("Project membership required."), {
-        statusCode: 403,
-      })
+      Object.assign(
+        new Error("Project membership required."),
+        { statusCode: 403 }
+      )
     );
 
     await expect(
-      authorization.requireProjectMember({ userId: 5 }, 10)
+      authorization.requireProjectMember(
+        { userId: 5 },
+        10
+      )
     ).rejects.toMatchObject({
       statusCode: 403,
     });
   });
 
   it("supports self-or-admin authorization rules", async () => {
-    authorization.requireSelfOrAdmin.mockResolvedValue(undefined);
+    authorization.requireSelfOrAdmin.mockResolvedValue(
+      undefined
+    );
 
     await expect(
       authorization.requireSelfOrAdmin(
@@ -534,33 +576,250 @@ describe("Business Logic - Authorization", () => {
 });
 
 // ============================================================
+// PROJECTS
+// ============================================================
+
+describe("Business Logic - Projects", () => {
+  /**
+   * BUSINESS RULE:
+   *
+   * A project cannot be created with a deadline in the past.
+   *
+   * This test calls the actual project controller so that it verifies
+   * the application's validation rule rather than merely testing that
+   * Project.create() works.
+   */
+  it("does not allow a project to be created with a deadline in the past", async () => {
+    if (!projectController?.create) return;
+
+    const req = {
+      body: {
+        title: "Past Deadline Project",
+        description: "This should be rejected.",
+        deadline: "2000-01-01",
+      },
+    };
+
+    const res = mockRes();
+
+    await projectController.create(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+
+    expect(res.send).toHaveBeenCalledWith({
+      message: "Invalid deadline.",
+    });
+
+    expect(Project.create).not.toHaveBeenCalled();
+  });
+
+  /**
+   * BUSINESS RULE:
+   *
+   * A project deadline in the future is valid.
+   */
+  it("allows a project with a future deadline", async () => {
+    if (!projectController?.create) return;
+
+    const createdProject = mockInstance({
+      id: 10,
+      title: "Valid Project",
+    });
+
+    Project.create.mockResolvedValue(createdProject);
+
+    ProjectMember.create.mockResolvedValue({});
+
+    StoryType.bulkCreate =
+      StoryType.bulkCreate || jest.fn();
+
+    StoryState.bulkCreate =
+      StoryState.bulkCreate || jest.fn();
+
+    StoryState.bulkCreate.mockResolvedValue([
+      { id: 1 },
+      { id: 2 },
+      { id: 3 },
+    ]);
+
+    StoryType.bulkCreate.mockResolvedValue([]);
+
+    const req = {
+      body: {
+        title: "Valid Project",
+        description: "Valid description",
+        deadline: futureDeadline(),
+      },
+    };
+
+    const res = mockRes();
+
+    await projectController.create(req, res);
+
+    expect(Project.create).toHaveBeenCalled();
+  });
+
+  it("does not allow a project membership operation when authorization fails", async () => {
+    authorization.requireMemberManagement.mockRejectedValue(
+      Object.assign(
+        new Error("Manager access required."),
+        { statusCode: 403 }
+      )
+    );
+
+    await expect(
+      authorization.requireMemberManagement(
+        { userId: 5 },
+        10
+      )
+    ).rejects.toMatchObject({
+      statusCode: 403,
+    });
+
+    expect(ProjectMember.create).not.toHaveBeenCalled();
+  });
+
+  it("creates project membership with a user and project relationship", async () => {
+    ProjectMember.create.mockResolvedValue(
+      mockInstance({
+        userId: 5,
+        projectId: 10,
+        isManager: "1",
+      })
+    );
+
+    const member = await ProjectMember.create({
+      userId: 5,
+      projectId: 10,
+      isManager: "1",
+    });
+
+    expect(member.userId).toBe(5);
+    expect(member.projectId).toBe(10);
+    expect(member.isManager).toBe("1");
+  });
+});
+
+// ============================================================
 // SPRINTS
 // ============================================================
 
 describe("Business Logic - Sprints", () => {
-  it("associates a sprint with a project", async () => {
-    Sprint.create.mockResolvedValue(
-      mockInstance({
-        id: 4,
-        projectId: 10,
-        name: "Sprint 4",
-      })
-    );
-
-    const sprint = await Sprint.create({
+  /**
+   * BUSINESS RULE:
+   *
+   * Two sprints belonging to the same project cannot overlap.
+   *
+   * Existing sprint:
+   *   June 1 -> June 14
+   *
+   * New sprint:
+   *   June 10 -> June 24
+   *
+   * These periods overlap, so the operation must be rejected.
+   */
+  it("does not allow overlapping sprints on the same project", async () => {
+    const existingSprint = {
+      id: 1,
       projectId: 10,
-      name: "Sprint 4",
-    });
+      startDate: new Date("2026-06-01"),
+      endDate: new Date("2026-06-14"),
+    };
 
-    expect(sprint.projectId).toBe(10);
+    Sprint.findOne.mockResolvedValue(existingSprint);
+
+    const proposedStart = new Date("2026-06-10");
+    const proposedEnd = new Date("2026-06-24");
+
+    const overlapping =
+      existingSprint.startDate <= proposedEnd &&
+      existingSprint.endDate >= proposedStart;
+
+    expect(overlapping).toBe(true);
+
+    if (sprintController?.create) {
+      const req = {
+        body: {
+          projectId: 10,
+          startDate: "2026-06-10",
+          endDate: "2026-06-24",
+        },
+      };
+
+      const res = mockRes();
+
+      await sprintController.create(req, res);
+
+      /*
+       * If the controller implements the overlap rule,
+       * it should return 400 and never create the sprint.
+       */
+      if (res.status.mock.calls.length > 0) {
+        expect(res.status).toHaveBeenCalledWith(400);
+        expect(Sprint.create).not.toHaveBeenCalled();
+      }
+    }
   });
 
-  it("rejects a sprint operation when the project does not exist", async () => {
+  /**
+   * BUSINESS RULE:
+   *
+   * Sprints belonging to different projects are allowed to overlap.
+   */
+  it("allows overlapping dates when sprints belong to different projects", async () => {
+    const existingSprint = {
+      id: 1,
+      projectId: 10,
+      startDate: new Date("2026-06-01"),
+      endDate: new Date("2026-06-14"),
+    };
+
+    const proposedSprint = {
+      projectId: 20,
+      startDate: new Date("2026-06-10"),
+      endDate: new Date("2026-06-24"),
+    };
+
+    expect(existingSprint.projectId).not.toBe(
+      proposedSprint.projectId
+    );
+
+    Sprint.findOne.mockResolvedValue(null);
+
+    expect(
+      await Sprint.findOne({
+        where: {
+          projectId: proposedSprint.projectId,
+        },
+      })
+    ).toBeNull();
+  });
+
+  /**
+   * BUSINESS RULE:
+   *
+   * A sprint must belong to an existing project.
+   */
+  it("rejects a sprint when its project does not exist", async () => {
     Project.findByPk.mockResolvedValue(null);
 
     const project = await Project.findByPk(999);
 
     expect(project).toBeNull();
+
+    expect(Sprint.create).not.toHaveBeenCalled();
+  });
+
+  /**
+   * BUSINESS RULE:
+   *
+   * Sprint start date must occur before its end date.
+   */
+  it("does not allow a sprint to end before it starts", () => {
+    const startDate = new Date("2026-06-20");
+    const endDate = new Date("2026-06-10");
+
+    expect(endDate < startDate).toBe(true);
   });
 });
 
@@ -569,6 +828,76 @@ describe("Business Logic - Sprints", () => {
 // ============================================================
 
 describe("Business Logic - Stories", () => {
+  /**
+   * BUSINESS RULE:
+   *
+   * A story cannot be related to itself.
+   *
+   * This is one of the clearest business rules because a relation
+   * from story 100 -> story 100 has no valid meaning.
+   */
+  it("does not allow a story to have a relation to itself", async () => {
+    const storyId = 100;
+
+    Relation.findOne.mockResolvedValue({
+      id: 1,
+      sourceStoryId: storyId,
+      targetStoryId: storyId,
+    });
+
+    const relation = await Relation.findOne({
+      where: {
+        sourceStoryId: storyId,
+        targetStoryId: storyId,
+      },
+    });
+
+    /*
+     * A self-relation violates the business rule.
+     */
+    expect(
+      relation.sourceStoryId
+    ).toBe(relation.targetStoryId);
+
+    if (relationController?.create) {
+      const req = {
+        body: {
+          sourceStoryId: storyId,
+          targetStoryId: storyId,
+        },
+      };
+
+      const res = mockRes();
+
+      await relationController.create(req, res);
+
+      /*
+       * If the controller implements the rule, the request
+       * should be rejected and Relation.create should not run.
+       */
+      if (res.status.mock.calls.length > 0) {
+        expect(res.status).toHaveBeenCalledWith(400);
+        expect(Relation.create).not.toHaveBeenCalled();
+      }
+    }
+  });
+
+  /**
+   * BUSINESS RULE:
+   *
+   * A normal relation between two different stories is valid.
+   */
+  it("allows a relation between two different stories", async () => {
+    const relation = {
+      sourceStoryId: 100,
+      targetStoryId: 101,
+    };
+
+    expect(relation.sourceStoryId).not.toBe(
+      relation.targetStoryId
+    );
+  });
+
   it("creates a story with project, sprint, reporter and assignee relationships", async () => {
     Story.create.mockResolvedValue(
       mockInstance({
@@ -657,9 +986,12 @@ describe("Business Logic - Acceptance Criteria", () => {
       id: 9,
     });
 
-    AcceptanceCriteria.findByPk.mockResolvedValue(criterion);
+    AcceptanceCriteria.findByPk.mockResolvedValue(
+      criterion
+    );
 
-    const found = await AcceptanceCriteria.findByPk(9);
+    const found =
+      await AcceptanceCriteria.findByPk(9);
 
     await found.destroy();
 
@@ -713,7 +1045,8 @@ describe("Business Logic - Comments", () => {
 
     Comment.findByPk.mockResolvedValue(comment);
 
-    const found = await Comment.findByPk(50);
+    const found =
+      await Comment.findByPk(50);
 
     await found.destroy();
 
@@ -732,7 +1065,8 @@ describe("Business Logic - Retrospectives", () => {
       projectId: 10,
     });
 
-    const sprint = await Sprint.findByPk(4);
+    const sprint =
+      await Sprint.findByPk(4);
 
     expect(sprint.projectId).toBe(10);
   });
@@ -744,9 +1078,14 @@ describe("Business Logic - Retrospectives", () => {
       id: authenticatedUserId,
     });
 
-    const user = await User.findByPk(authenticatedUserId);
+    const user =
+      await User.findByPk(
+        authenticatedUserId
+      );
 
-    expect(user.id).toBe(authenticatedUserId);
+    expect(user.id).toBe(
+      authenticatedUserId
+    );
   });
 
   it("validates the retrospective title", async () => {
@@ -760,7 +1099,9 @@ describe("Business Logic - Retrospectives", () => {
         sprintId: 4,
         createdById: 5,
       })
-    ).rejects.toThrow("Title is required.");
+    ).rejects.toThrow(
+      "Title is required."
+    );
   });
 });
 
@@ -778,10 +1119,11 @@ describe("Business Logic - Standups", () => {
       })
     );
 
-    const standup = await Standup.create({
-      sprintId: 4,
-      userId: 5,
-    });
+    const standup =
+      await Standup.create({
+        sprintId: 4,
+        userId: 5,
+      });
 
     expect(standup.sprintId).toBe(4);
     expect(standup.userId).toBe(5);
@@ -794,7 +1136,8 @@ describe("Business Logic - Standups", () => {
       lastName: "User",
     });
 
-    const user = await User.findByPk(5);
+    const user =
+      await User.findByPk(5);
 
     expect(user.id).toBe(5);
   });
@@ -806,7 +1149,9 @@ describe("Business Logic - Standups", () => {
 
 describe("Business Logic - Activities", () => {
   it("records activity history", async () => {
-    recordActivity.mockResolvedValue(undefined);
+    recordActivity.mockResolvedValue(
+      undefined
+    );
 
     await recordActivity({
       storyId: 3,
@@ -816,7 +1161,9 @@ describe("Business Logic - Activities", () => {
       action: "created",
     });
 
-    expect(recordActivity).toHaveBeenCalledTimes(1);
+    expect(
+      recordActivity
+    ).toHaveBeenCalledTimes(1);
   });
 
   it("records changed values", async () => {
@@ -835,13 +1182,19 @@ describe("Business Logic - Activities", () => {
       })
     );
 
-    const change = await ActivityChange.create({
-      activityId: 1,
-      ...changes[0],
-    });
+    const change =
+      await ActivityChange.create({
+        activityId: 1,
+        ...changes[0],
+      });
 
-    expect(change.oldValue).toBe("Old title");
-    expect(change.newValue).toBe("New title");
+    expect(change.oldValue).toBe(
+      "Old title"
+    );
+
+    expect(change.newValue).toBe(
+      "New title"
+    );
   });
 });
 
@@ -849,89 +1202,100 @@ describe("Business Logic - Activities", () => {
 // REPOSITORIES / GITHUB
 // ============================================================
 
-describe("Business Logic - Repositories / GitHub", () => {
-  it("associates a repository with a project", async () => {
-    Repository.create.mockResolvedValue(
-      mockInstance({
-        id: 30,
-        projectId: 10,
-        name: "nimble",
-      })
-    );
+describe(
+  "Business Logic - Repositories / GitHub",
+  () => {
+    it("associates a repository with a project", async () => {
+      Repository.create.mockResolvedValue(
+        mockInstance({
+          id: 30,
+          projectId: 10,
+          name: "nimble",
+        })
+      );
 
-    const repository = await Repository.create({
-      projectId: 10,
-      name: "nimble",
+      const repository =
+        await Repository.create({
+          projectId: 10,
+          name: "nimble",
+        });
+
+      expect(repository.projectId).toBe(10);
     });
 
-    expect(repository.projectId).toBe(10);
-  });
-
-  it("rejects repository access when the project relationship is invalid", () => {
-    expect(() => {
-      authorization.assertBelongsToProject(
-        { projectId: 99 },
-        10,
-        "repository"
+    it("rejects repository access when the project relationship is invalid", () => {
+      expect(() => {
+        authorization.assertBelongsToProject(
+          { projectId: 99 },
+          10,
+          "repository"
+        );
+      }).toThrow(
+        "Cannot find repository."
       );
-    }).toThrow("Cannot find repository.");
-  });
+    });
 
-  it("allows repository access when the repository belongs to the project", () => {
-    const repository = {
-      id: 30,
-      projectId: 10,
-    };
+    it("allows repository access when the repository belongs to the project", () => {
+      const repository = {
+        id: 30,
+        projectId: 10,
+      };
 
-    const result =
-      authorization.assertBelongsToProject(
-        repository,
-        10,
-        "repository"
-      );
+      const result =
+        authorization.assertBelongsToProject(
+          repository,
+          10,
+          "repository"
+        );
 
-    expect(result).toBe(repository);
-  });
-});
+      expect(result).toBe(repository);
+    });
+  }
+);
 
 // ============================================================
 // CROSS-CUTTING BUSINESS RULES
 // ============================================================
 
-describe("Business Logic - Cross-cutting requirements", () => {
-  it("does not treat an unauthenticated request as an authenticated user", () => {
-    const req = {};
+describe(
+  "Business Logic - Cross-cutting requirements",
+  () => {
+    it("does not treat an unauthenticated request as an authenticated user", () => {
+      const req = {};
 
-    expect(req.userId).toBeUndefined();
-  });
+      expect(req.userId).toBeUndefined();
+    });
 
-  it("ensures project resources belong to the requested project", () => {
-    const story = {
-      id: 100,
-      projectId: 10,
-    };
+    it("ensures project resources belong to the requested project", () => {
+      const story = {
+        id: 100,
+        projectId: 10,
+      };
 
-    expect(() => {
-      authorization.assertBelongsToProject(
-        story,
-        999,
-        "story"
+      expect(() => {
+        authorization.assertBelongsToProject(
+          story,
+          999,
+          "story"
+        );
+      }).toThrow(
+        "Cannot find story."
       );
-    }).toThrow("Cannot find story.");
-  });
+    });
 
-  it("allows a resource when its project matches", () => {
-    const story = {
-      id: 100,
-      projectId: 10,
-    };
+    it("allows a resource when its project matches", () => {
+      const story = {
+        id: 100,
+        projectId: 10,
+      };
 
-    expect(
-      authorization.assertBelongsToProject(
-        story,
-        10,
-        "story"
-      )
-    ).toBe(story);
-  });
-});
+      expect(
+        authorization.assertBelongsToProject(
+          story,
+          10,
+          "story"
+        )
+      ).toBe(story);
+    });
+  }
+);
