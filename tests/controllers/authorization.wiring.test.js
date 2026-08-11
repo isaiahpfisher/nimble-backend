@@ -211,7 +211,11 @@ const ADMIN_ACTIONS = [
   ["comment.findAll", controllers.comment.findAll, { userId: CALLER }],
   ["relation.findAll", controllers.relation.findAll, { userId: CALLER }],
   ["activity.findAll", controllers.activity.findAll, { userId: CALLER }],
-  ["retrospective.findAll", controllers.retrospective.findAll, { userId: CALLER }],
+  // retrospective.controller.js has no findAll export today (only
+  // findAllForSprint / findOne / create / update / delete), so there is
+  // nothing to wire an admin guard onto yet. Add this back in once/if that
+  // action exists:
+  // ["retrospective.findAll", controllers.retrospective.findAll, { userId: CALLER }],
   ["standup.findAll", controllers.standup.findAll, { userId: CALLER }],
   ["user.deleteAll", controllers.user.deleteAll, { userId: CALLER }],
   ["user.findByEmail", controllers.user.findByEmail, { userId: CALLER, params: { email: "a@b.c" } }],
