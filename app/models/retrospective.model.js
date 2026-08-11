@@ -8,11 +8,6 @@ module.exports = (sequelize, Sequelize) => {
         defaultValue: "Sprint Retrospective",
       },
 
-      agenda: {
-        type: Sequelize.TEXT,
-        allowNull: true,
-      },
-
       summary: {
         type: Sequelize.TEXT,
         allowNull: false,
